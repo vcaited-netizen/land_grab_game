@@ -788,7 +788,7 @@
   </div>
 
   <!-- ==================== 게임 핵심 스크립트 ==================== -->
-  <script type="module">
+  <script>
     // =========================================================================
     // 1. Firebase 초기화 (온라인 대전을 쓸 때만 MANUAL_FIREBASE_CONFIG에 키 입력)
     //    설정이 없거나 오프라인이어도 로컬 2인 대전은 100% 독립 작동합니다.
@@ -4219,4 +4219,2113 @@
       // 확대/축소 & 자유 관전 카메라 ('follow' | 'free' | 'overview')
       cam: { x: 135, y: 94, zoom: 1.45, defaultZoom: 1.45, minZoom: 1.0, maxZoom: 3.2, mode: 'follow' },
       drag: { active: false, pointerId: null, currWorldX: 0, currWorldY: 0 },
-      pan: { active: false, pointerId: null, last
+      pan: { active: false, pointerId: null, lastClientX: 0, lastClientY: 0 },
+      activePointers: new Map(),  // 두 손가락 핀치 줌용 활성 포인터 맵
+      pinch: { active: false, startDist: 0, startZoom: 1.0 },
+      minimapDragging: false,
+      hudSyncAccum: 0,
+      unsubRtRoom: null,
+      rtRoomCode: null,
+      rtRoomPlayers: [],
+      rtIsHost: false,
+      rtHostAsSpectator: true,
+
+      // 참가 인원수(2 ~ 30명)에 따라 연속적으로 맵 크기와 기본 확대 배율 자동 계산
+      getMapDims(playerCount) {
+        const n = Math.max(2, Math.min(30, playerCount));
+        const t = (n - 2) / 28;
+        const w = Math.round((180 + t * 200) / 10) * 10; // 180 ~ 380
+        const h = Math.round(w * 0.7);                   // 10:7 비율 유지
+        const defaultZoom = Number((1.05 + t * 0.85).toFixed(2));
+        return { w, h, label: `맵 ${w}×${h}`, defaultZoom };
+      },
+
+      getDifficultyLabel(diff = this.aiDifficulty) {
+        return diff === 'easy' ? '쉬움' : diff === 'hard' ? '어려움' : '보통';
+      },
+
+      switchUI(isRealtime) {
+        document.getElementById('turnHudBox').classList.toggle('hidden', isRealtime);
+        document.getElementById('rtHudBox').classList.toggle('hidden', !isRealtime);
+        document.getElementById('turnItemDock').classList.toggle('hidden', isRealtime);
+        document.getElementById('minimapWrap').classList.toggle('hidden', !isRealtime);
+        document.getElementById('rtLeaderboard').classList.toggle('hidden', !isRealtime);
+        document.getElementById('rtZoomControls').classList.toggle('hidden', !isRealtime);
+        document.getElementById('bombTargetBanner').classList.add('hidden');
+        document.getElementById('waitTurnBanner').classList.add('hidden');
+      },
+
+      // 맵 외곽(4개 변 둘레)에 참가자 수만큼 균등 좌표를 생성하고 시드 기반으로 랜덤 셔플
+      generateOuterPerimeterSpawns(playerCount, initR, rng) {
+        const margin = Math.max(8, initR * 0.85);
+        const innerW = Math.max(20, this.gridW - margin * 2);
+        const innerH = Math.max(20, this.gridH - margin * 2);
+        const perimeter = 2 * (innerW + innerH);
+        const offset = rng() * perimeter; // 시작 기준점도 매 판 랜덤
+
+        const slots = [];
+        for (let i = 0; i < playerCount; i++) {
+          let d = (offset + (i * perimeter) / playerCount) % perimeter;
+          let x, y;
+          if (d < innerW) {
+            // 상단 변 (좌 -> 우)
+            x = margin + d;
+            y = margin;
+          } else if (d < innerW + innerH) {
+            // 우측 변 (상 -> 하)
+            x = this.gridW - margin;
+            y = margin + (d - innerW);
+          } else if (d < 2 * innerW + innerH) {
+            // 하단 변 (우 -> 좌)
+            x = this.gridW - margin - (d - innerW - innerH);
+            y = this.gridH - margin;
+          } else {
+            // 좌측 변 (하 -> 상)
+            x = margin;
+            y = this.gridH - margin - (d - 2 * innerW - innerH);
+          }
+          slots.push({ x, y });
+        }
+
+        // 시드 기반 Fisher-Yates 셔플로 각 참가자의 외곽 자리를 완전 랜덤 배정
+        for (let i = slots.length - 1; i > 0; i--) {
+          const j = Math.floor(rng() * (i + 1));
+          const tmp = slots[i];
+          slots[i] = slots[j];
+          slots[j] = tmp;
+        }
+        return slots;
+      },
+
+      initWorld(playerCount, durationSec, seed, humanName, onlinePlayers = null, isComputerMode = true, isSpectator = false) {
+        const clampedCount = Math.max(2, Math.min(30, playerCount));
+        this.seed = seed;
+        this.timeLeft = durationSec;
+        this.isComputerMode = isComputerMode;
+        this.isSpectator = isSpectator;
+        this.followTargetId = 0;
+
+        const dims = this.getMapDims(clampedCount);
+        this.gridW = dims.w;
+        this.gridH = dims.h;
+        this.totalCells = this.gridW * this.gridH;
+        this.cam.defaultZoom = dims.defaultZoom;
+        this.cam.zoom = isSpectator ? 1.0 : dims.defaultZoom;
+        this.cam.mode = isSpectator ? 'overview' : 'follow';
+        this.activePointers.clear();
+        this.pinch.active = false;
+        this.pan.active = false;
+        this.drag.active = false;
+
+        this.grid = new Uint8Array(this.totalCells);
+        this.heightmap = new Float32Array(this.totalCells);
+        this.particles = [];
+        this.floatingTexts = [];
+
+        // 오프스크린 캔버스 초기화
+        this.territoryCanvas.width = this.gridW;
+        this.territoryCanvas.height = this.gridH;
+        this.territoryImgData = this.territoryCanvas.getContext('2d').createImageData(this.gridW, this.gridH);
+
+        this.minimapCanvas = document.getElementById('minimapCanvas');
+        this.minimapCtx = this.minimapCanvas.getContext('2d');
+
+        // 1) 시드 기반 부드러운 높이맵 & 모래 지형 렌더링
+        this.buildTerrain(seed);
+
+        // 2) 외곽 둘레 길이에 맞춰 겹치지 않는 초기 영토 반지름 자동 산출 + 랜덤 외곽 배치
+        const rng = createRNG(seed ^ 0x2468ACE0);
+        const approxPerimeter = 2 * (this.gridW + this.gridH - 40);
+        const slotSpacing = approxPerimeter / clampedCount;
+        const initR = Math.max(10, Math.min(18, slotSpacing * 0.34));
+        const spawns = this.generateOuterPerimeterSpawns(clampedCount, initR, rng);
+
+        this.players = [];
+        const myUid = currentUser?.uid || 'local_me';
+        this.myId = isSpectator ? 0 : 1;
+
+        for (let i = 0; i < clampedCount; i++) {
+          const id = i + 1;
+          const { x: hx, y: hy } = spawns[i];
+          const onlineP = onlinePlayers && onlinePlayers[i] ? onlinePlayers[i] : null;
+          // 관전자 모드일 때는 어떤 슬롯에도 나를 배정하지 않음 (플레이어 완전 제외)
+          const isMe = !isSpectator && (onlinePlayers
+            ? (onlineP && onlineP.uid === myUid)
+            : (i === 0));
+          if (isMe) this.myId = id;
+
+          const botIdx = isSpectator ? i : Math.max(0, i - 1);
+          const name = onlineP
+            ? onlineP.name
+            : isMe
+              ? (humanName || '나')
+              : `AI ${AI_BOT_NAMES[botIdx % AI_BOT_NAMES.length]}`;
+          const avatar = onlineP
+            ? onlineP.avatar
+            : isMe
+              ? this.myAvatar
+              : AVATAR_CATALOG[i % AVATAR_CATALOG.length].id;
+
+          this.players.push({
+            id,
+            uid: onlineP ? onlineP.uid : (isMe ? myUid : `bot_${id}`),
+            name,
+            avatar,
+            color: RT_PALETTE[id],
+            isHuman: isMe || !!onlineP,
+            isBot: !isMe && !onlineP,
+            homeX: hx,
+            homeY: hy,
+            x: hx,
+            y: hy,
+            vx: 0,
+            vy: 0,
+            moving: false,
+            flicksLeft: 3,
+            hasLeft: false,
+            path: [{ x: hx, y: hy }],
+            cells: 0,
+            percent: 0,
+            respawnTimer: 0,
+            aiCooldown: 0.5 + rng() * 1.1
+          });
+
+          // 외곽 초기 거점 칠하기 (맵 경계에 자연스럽게 붙는 형태)
+          const rSq = initR * initR;
+          const minX = Math.max(0, Math.floor(hx - initR));
+          const maxX = Math.min(this.gridW - 1, Math.ceil(hx + initR));
+          const minY = Math.max(0, Math.floor(hy - initR));
+          const maxY = Math.min(this.gridH - 1, Math.ceil(hy + initR));
+          for (let y = minY; y <= maxY; y++) {
+            for (let x = minX; x <= maxX; x++) {
+              if ((x - hx) ** 2 + (y - hy) ** 2 <= rSq) {
+                this.grid[y * this.gridW + x] = id;
+              }
+            }
+          }
+        }
+
+        // 3) 중앙 영역 위주로 아담한 장애물 배치 (외곽 스폰 영토 회피)
+        this.obstacles = [];
+        const obsCount = Math.min(18, Math.max(4, Math.floor(clampedCount * 0.55)));
+        let tries = 0;
+        while (this.obstacles.length < obsCount && tries < 250) {
+          tries++;
+          const ox = 22 + rng() * (this.gridW - 44);
+          const oy = 18 + rng() * (this.gridH - 36);
+          if (this.grid[Math.floor(oy) * this.gridW + Math.floor(ox)] !== 0) continue;
+          if (this.players.some(p => Math.hypot(p.homeX - ox, p.homeY - oy) < initR + 8)) continue;
+          if (this.obstacles.some(o => Math.hypot(o.x - ox, o.y - oy) < 20)) continue;
+          this.obstacles.push({
+            x: ox, y: oy,
+            r: 3.0 + rng() * 1.4,
+            type: tries % 2 === 0 ? 'boulder' : 'stump'
+          });
+        }
+
+        this.recalcAllPercents();
+        this.renderTerritoryCanvas();
+
+        // 카메라 초기 위치: 관전자는 운동장 전체 중앙, 플레이어는 내 외곽 땅 중심
+        const me = this.getMe();
+        if (this.isSpectator || !me) {
+          this.cam.x = this.gridW * 0.5;
+          this.cam.y = this.gridH * 0.5;
+          document.getElementById('rtMyNameHud').textContent = '선생님 관전';
+          document.getElementById('rtMyAvatarHud').innerHTML = `<div class="w-full h-full flex items-center justify-center bg-slate-800 text-xl">👁️</div>`;
+          document.getElementById('rtMyAvatarHud').style.borderColor = '#475569';
+          document.getElementById('rtMyRankBadge').textContent = '관전자';
+          document.getElementById('rtMyPercentHud').textContent = '플레이어 제외';
+          document.getElementById('rtFlickDots').innerHTML = '';
+          document.getElementById('rtRecenterBtn').classList.add('hidden');
+        } else {
+          this.cam.x = me.homeX;
+          this.cam.y = me.homeY;
+          document.getElementById('rtMyNameHud').textContent = me.name;
+          document.getElementById('rtMyAvatarHud').innerHTML = renderAvatarSVG(me.avatar, 'happy', 1);
+          document.getElementById('rtMyAvatarHud').style.borderColor = me.color.hex;
+          document.getElementById('rtRecenterBtn').classList.remove('hidden');
+        }
+
+        document.getElementById('rtPlayerCountHud').textContent = isComputerMode
+          ? `🤖 ${clampedCount}명 (AI ${this.getDifficultyLabel()})`
+          : `👥 ${clampedCount}명 실시간 대전`;
+        document.getElementById('rtMapSizeHud').textContent = `맵 ${this.gridW}×${this.gridH}`;
+        document.getElementById('rtAliveBadge').textContent = `${clampedCount}명`;
+        document.getElementById('statusIcon').textContent = this.isSpectator ? '👁️' : (isComputerMode ? '🤖' : '⚡');
+        document.getElementById('statusText').textContent = this.isSpectator
+          ? '선생님 관전 모드 · 두 손가락/휠로 확대·축소, 화면·미니맵 드래그 및 순위표 클릭으로 학생 관전!'
+          : '실시간 배틀 · 두 손가락/휠로 확대·축소, 빈 화면·미니맵 드래그로 전장 관전, 🎯 내 위치로 복귀!';
+
+        this.updateHUD();
+        this.drawMinimap();
+      },
+
+      // AI 귀환용: 현재 위치에서 가장 가까운 자기 땅 좌표 샘플링
+      findNearestOwnPoint(p) {
+        let bestX = p.homeX, bestY = p.homeY;
+        let bestD2 = (p.homeX - p.x) ** 2 + (p.homeY - p.y) ** 2;
+        const step = 4;
+        const searchR = 48;
+        const minX = Math.max(0, Math.floor(p.x - searchR));
+        const maxX = Math.min(this.gridW - 1, Math.ceil(p.x + searchR));
+        const minY = Math.max(0, Math.floor(p.y - searchR));
+        const maxY = Math.min(this.gridH - 1, Math.ceil(p.y + searchR));
+        for (let y = minY; y <= maxY; y += step) {
+          const row = y * this.gridW;
+          for (let x = minX; x <= maxX; x += step) {
+            if (this.grid[row + x] === p.id) {
+              const d2 = (x - p.x) ** 2 + (y - p.y) ** 2;
+              if (d2 < bestD2) { bestD2 = d2; bestX = x; bestY = y; }
+            }
+          }
+        }
+        return { x: bestX, y: bestY, dist: Math.sqrt(bestD2) };
+      },
+
+      buildTerrain(seed) {
+        const rng = createRNG(seed);
+        const gw = this.gridW;
+        const gh = this.gridH;
+        const scale = gw > 300 ? 1.5 : 2;
+        const tw = Math.round(gw * scale);
+        const th = Math.round(gh * scale);
+        this.terrainCanvas.width = tw;
+        this.terrainCanvas.height = th;
+        const tCtx = this.terrainCanvas.getContext('2d');
+        const img = tCtx.createImageData(tw, th);
+        const data = img.data;
+
+        const makeGrid = (nx, ny) => {
+          const arr = new Float32Array(nx * ny);
+          for (let i = 0; i < arr.length; i++) arr[i] = rng() * 2 - 1;
+          return { nx, ny, arr };
+        };
+        const sample = (g, u, v) => {
+          const fx = u * (g.nx - 1), fy = v * (g.ny - 1);
+          const x0 = Math.floor(fx), y0 = Math.floor(fy);
+          const x1 = Math.min(g.nx - 1, x0 + 1), y1 = Math.min(g.ny - 1, y0 + 1);
+          const tx = fx - x0, ty = fy - y0;
+          const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+          const v00 = g.arr[y0 * g.nx + x0], v10 = g.arr[y0 * g.nx + x1];
+          const v01 = g.arr[y1 * g.nx + x0], v11 = g.arr[y1 * g.nx + x1];
+          return (v00 + (v10 - v00) * sx) * (1 - sy) + (v01 + (v11 - v01) * sx) * sy;
+        };
+
+        const o1 = makeGrid(8, 6);
+        const o2 = makeGrid(16, 12);
+        for (let y = 0; y < gh; y++) {
+          const v = y / (gh - 1);
+          for (let x = 0; x < gw; x++) {
+            const u = x / (gw - 1);
+            this.heightmap[y * gw + x] = sample(o1, u, v) * 0.65 + sample(o2, u, v) * 0.35;
+          }
+        }
+
+        const lx = -0.58, ly = -0.58, lz = 0.57;
+        for (let py = 0; py < th; py++) {
+          const gy = Math.min(gh - 2, Math.floor(py / scale));
+          for (let px = 0; px < tw; px++) {
+            const gx = Math.min(gw - 2, Math.floor(px / scale));
+            const idx = gy * gw + gx;
+            const h = this.heightmap[idx];
+            const dhx = this.heightmap[idx + 1] - h;
+            const dhy = this.heightmap[idx + gw] - h;
+            const nx = -dhx * 9, ny = -dhy * 9, nz = 1;
+            const diff = Math.max(0.32, (nx * lx + ny * ly + nz * lz) / Math.hypot(nx, ny, nz));
+            const grain = ((Math.sin(px * 12.9898 + py * 78.233) * 43758.5453) % 1) * 14;
+            const shade = 0.72 + diff * 0.42;
+            const p = (py * tw + px) * 4;
+            data[p]     = Math.max(0, Math.min(255, (214 + h * 18 + grain) * shade));
+            data[p + 1] = Math.max(0, Math.min(255, (186 + h * 16 + grain * 0.9) * shade));
+            data[p + 2] = Math.max(0, Math.min(255, (144 + h * 12 + grain * 0.8) * shade));
+            data[p + 3] = 255;
+          }
+        }
+        tCtx.putImageData(img, 0, 0);
+      },
+
+      sampleSlope(x, y) {
+        const gx = Math.max(1, Math.min(this.gridW - 2, Math.floor(x)));
+        const gy = Math.max(1, Math.min(this.gridH - 2, Math.floor(y)));
+        const idx = gy * this.gridW + gx;
+        return {
+          gx: (this.heightmap[idx + 1] - this.heightmap[idx - 1]) * 0.5,
+          gy: (this.heightmap[idx + this.gridW] - this.heightmap[idx - this.gridW]) * 0.5
+        };
+      },
+
+      getMe() {
+        if (this.isSpectator || this.myId <= 0) return null;
+        return this.players.find(p => p.id === this.myId) || null;
+      },
+
+      clampCamera() {
+        this.cam.zoom = Math.max(this.cam.minZoom, Math.min(this.cam.maxZoom, this.cam.zoom));
+        const viewW = this.gridW / this.cam.zoom;
+        const viewH = this.gridH / this.cam.zoom;
+        const halfW = viewW * 0.5;
+        const halfH = viewH * 0.5;
+        this.cam.x = Math.max(halfW, Math.min(this.gridW - halfW, this.cam.x));
+        this.cam.y = Math.max(halfH, Math.min(this.gridH - halfH, this.cam.y));
+      },
+
+      setZoom(newZoom) {
+        this.cam.zoom = Math.max(this.cam.minZoom, Math.min(this.cam.maxZoom, newZoom));
+        if (this.cam.zoom <= 1.02) {
+          this.cam.zoom = 1.0;
+          this.cam.x = this.gridW * 0.5;
+          this.cam.y = this.gridH * 0.5;
+          this.cam.mode = 'overview';
+        } else if (this.cam.mode === 'overview') {
+          this.cam.mode = this.isSpectator ? 'free' : 'follow';
+        }
+        this.clampCamera();
+        this.drawMinimap();
+      },
+
+      setOverviewMode() {
+        this.followTargetId = 0;
+        this.cam.zoom = 1.0;
+        this.cam.x = this.gridW * 0.5;
+        this.cam.y = this.gridH * 0.5;
+        this.cam.mode = 'overview';
+        this.drawMinimap();
+      },
+
+      recenterOnMe() {
+        const me = this.getMe();
+        if (!me) {
+          this.setOverviewMode();
+          return;
+        }
+        this.followTargetId = 0;
+        this.cam.mode = 'follow';
+        if (this.cam.zoom <= 1.05) this.cam.zoom = this.cam.defaultZoom;
+        this.cam.x = me.x;
+        this.cam.y = me.y;
+        this.clampCamera();
+        this.drawMinimap();
+      },
+
+      isInside(x, y, playerId) {
+        const gx = Math.round(x), gy = Math.round(y);
+        if (gx < 0 || gx >= this.gridW || gy < 0 || gy >= this.gridH) return false;
+        return this.grid[gy * this.gridW + gx] === playerId;
+      },
+
+      isInsideEnemy(x, y, playerId) {
+        const gx = Math.round(x), gy = Math.round(y);
+        if (gx < 0 || gx >= this.gridW || gy < 0 || gy >= this.gridH) return false;
+        const owner = this.grid[gy * this.gridW + gx];
+        return owner !== 0 && owner !== playerId;
+      },
+
+      recalcAllPercents() {
+        const counts = new Int32Array(this.players.length + 1);
+        const g = this.grid;
+        for (let i = 0; i < this.totalCells; i++) {
+          const v = g[i];
+          if (v > 0 && v < counts.length) counts[v]++;
+        }
+        for (const p of this.players) {
+          p.cells = counts[p.id] || 0;
+          p.percent = (p.cells / this.totalCells) * 100;
+        }
+      },
+
+      segmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
+        const ccw = (p1x, p1y, p2x, p2y, p3x, p3y) =>
+          (p3y - p1y) * (p2x - p1x) > (p2y - p1y) * (p3x - p1x);
+        return (
+          ccw(ax, ay, cx, cy, dx, dy) !== ccw(bx, by, cx, cy, dx, dy) &&
+          ccw(ax, ay, bx, by, cx, cy) !== ccw(ax, ay, bx, by, dx, dy)
+        );
+      },
+
+      renderTerritoryCanvas() {
+        const data = this.territoryImgData.data;
+        const g = this.grid;
+        const w = this.gridW, h = this.gridH;
+
+        for (let y = 0; y < h; y++) {
+          const row = y * w;
+          for (let x = 0; x < w; x++) {
+            const idx = row + x;
+            const val = g[idx];
+            const p = idx * 4;
+            if (val === 0) {
+              data[p + 3] = 0;
+            } else {
+              const col = RT_PALETTE[val] || RT_PALETTE[1];
+              const isEdge =
+                x === 0 || x === w - 1 || y === 0 || y === h - 1 ||
+                g[idx - 1] !== val || g[idx + 1] !== val ||
+                g[idx - w] !== val || g[idx + w] !== val;
+              if (isEdge) {
+                data[p] = Math.max(0, col.r - 35);
+                data[p + 1] = Math.max(0, col.g - 35);
+                data[p + 2] = Math.max(0, col.b - 35);
+                data[p + 3] = 240;
+              } else {
+                data[p] = col.r;
+                data[p + 1] = col.g;
+                data[p + 2] = col.b;
+                data[p + 3] = 132;
+              }
+            }
+          }
+        }
+        this.territoryCanvas.getContext('2d').putImageData(this.territoryImgData, 0, 0);
+      },
+
+      drawLineOnMask(mask, x0, y0, x1, y1, val) {
+        const w = this.gridW, h = this.gridH;
+        let ix0 = Math.max(0, Math.min(w - 1, Math.round(x0)));
+        let iy0 = Math.max(0, Math.min(h - 1, Math.round(y0)));
+        const ix1 = Math.max(0, Math.min(w - 1, Math.round(x1)));
+        const iy1 = Math.max(0, Math.min(h - 1, Math.round(y1)));
+        const dx = Math.abs(ix1 - ix0), dy = Math.abs(iy1 - iy0);
+        const sx = ix0 < ix1 ? 1 : -1, sy = iy0 < iy1 ? 1 : -1;
+        let err = dx - dy;
+        while (true) {
+          mask[iy0 * w + ix0] = val;
+          if (ix0 === ix1 && iy0 === iy1) break;
+          const e2 = 2 * err;
+          let mx = false, px = ix0;
+          if (e2 > -dy) { err -= dy; ix0 += sx; mx = true; }
+          if (e2 < dx) { err += dx; iy0 += sy; if (mx) mask[iy0 * w + px] = val; }
+        }
+      },
+
+      captureForPlayer(p) {
+        const w = this.gridW, h = this.gridH, tot = this.totalCells;
+        const wall = new Uint8Array(tot);
+        const pathMask = new Uint8Array(tot);
+        const capturedMask = new Uint8Array(tot);
+        for (let i = 0; i < tot; i++) {
+          if (this.grid[i] === p.id) wall[i] = 1;
+        }
+        for (let i = 0; i < p.path.length - 1; i++) {
+          this.drawLineOnMask(wall, p.path[i].x, p.path[i].y, p.path[i + 1].x, p.path[i + 1].y, 1);
+          this.drawLineOnMask(pathMask, p.path[i].x, p.path[i].y, p.path[i + 1].x, p.path[i + 1].y, 1);
+        }
+
+        const visited = new Uint8Array(tot);
+        const queue = new Int32Array(tot);
+        const comps = [];
+
+        for (let start = 0; start < tot; start++) {
+          if (wall[start] === 1 || visited[start] === 1) continue;
+          let head = 0, tail = 0;
+          queue[tail++] = start;
+          visited[start] = 1;
+          while (head < tail) {
+            const curr = queue[head++];
+            const cx = curr % w, cy = (curr - cx) / w;
+            if (cx > 0 && wall[curr - 1] === 0 && visited[curr - 1] === 0) { visited[curr - 1] = 1; queue[tail++] = curr - 1; }
+            if (cx < w - 1 && wall[curr + 1] === 0 && visited[curr + 1] === 0) { visited[curr + 1] = 1; queue[tail++] = curr + 1; }
+            if (cy > 0 && wall[curr - w] === 0 && visited[curr - w] === 0) { visited[curr - w] = 1; queue[tail++] = curr - w; }
+            if (cy < h - 1 && wall[curr + w] === 0 && visited[curr + w] === 0) { visited[curr + w] = 1; queue[tail++] = curr + w; }
+          }
+          comps.push({ cells: queue.slice(0, tail), size: tail });
+        }
+
+        let gained = 0;
+        if (comps.length > 1) {
+          let maxIdx = 0;
+          for (let i = 1; i < comps.length; i++) if (comps[i].size > comps[maxIdx].size) maxIdx = i;
+          for (let i = 0; i < comps.length; i++) {
+            if (i === maxIdx) continue;
+            const cells = comps[i].cells;
+            for (let j = 0; j < cells.length; j++) {
+              const idx = cells[j];
+              if (this.grid[idx] !== p.id) {
+                this.grid[idx] = p.id;
+                capturedMask[idx] = 1;
+                gained++;
+              }
+            }
+          }
+        }
+        for (let i = 0; i < tot; i++) {
+          if (pathMask[i] === 1 && this.grid[i] !== p.id) {
+            this.grid[i] = p.id;
+            capturedMask[i] = 1;
+            gained++;
+          }
+        }
+
+        if (gained > 0) {
+          // 먼저 차지한 땅이 다른 참가자의 진행 중인 이동 선(또는 말)과 겹치면 해당 참가자의 선을 제거
+          let cancelledNames = [];
+          for (const other of this.players) {
+            if (other.id === p.id) continue;
+            if (!other.hasLeft && other.path.length <= 1 && !other.moving) continue;
+
+            const pts = other.moving
+              ? [...other.path, { x: other.x, y: other.y }]
+              : other.path;
+
+            let overlapped = false;
+            const ox = Math.max(0, Math.min(w - 1, Math.round(other.x)));
+            const oy = Math.max(0, Math.min(h - 1, Math.round(other.y)));
+            if (capturedMask[oy * w + ox] === 1) {
+              overlapped = true;
+            } else {
+              for (let k = 0; k < pts.length - 1 && !overlapped; k++) {
+                const ax = pts[k].x, ay = pts[k].y;
+                const bx = pts[k + 1].x, by = pts[k + 1].y;
+                const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay)));
+                for (let s = 0; s <= steps; s++) {
+                  const t = s / steps;
+                  const gx = Math.max(0, Math.min(w - 1, Math.round(ax + (bx - ax) * t)));
+                  const gy = Math.max(0, Math.min(h - 1, Math.round(ay + (by - ay) * t)));
+                  if (capturedMask[gy * w + gx] === 1) {
+                    overlapped = true;
+                    break;
+                  }
+                }
+              }
+            }
+
+            if (overlapped) {
+              cancelledNames.push(other.name);
+              this.respawnPlayer(other, `🚩 ${p.name}님이 먼저 땅을 차지해 내 선이 사라졌어요!`);
+            }
+          }
+
+          this.recalcAllPercents();
+          this.renderTerritoryCanvas();
+          this.drawMinimap();
+          if (p.id === this.myId) {
+            SoundFX.playCapture();
+            const pct = ((gained / tot) * 100).toFixed(2);
+            this.floatingTexts.push({ x: p.x, y: p.y, text: `+${pct}% 획득!`, color: p.color.hex, life: 1.0 });
+            if (cancelledNames.length > 0) {
+              showToast(`🎉 +${pct}% 획득! 먼저 차지해서 ${cancelledNames[0]}님 등의 선을 지웠어요!`);
+            } else {
+              showToast(`🎉 땅을 +${pct}% 넓혔어요!`);
+            }
+          }
+        }
+        return gained;
+      },
+
+      respawnPlayer(p, reason = '') {
+        // 자기 땅 중 하나를 찾아 안전하게 복귀 (땅이 다 사라졌으면 원래 홈 근처에 소형 거점 재생성)
+        let found = false;
+        if (p.cells > 10) {
+          for (let tries = 0; tries < 60; tries++) {
+            const rx = Math.floor(Math.random() * this.gridW);
+            const ry = Math.floor(Math.random() * this.gridH);
+            if (this.grid[ry * this.gridW + rx] === p.id) {
+              p.x = rx; p.y = ry; found = true; break;
+            }
+          }
+        }
+        if (!found) {
+          p.x = p.homeX; p.y = p.homeY;
+          const r = 8;
+          for (let y = Math.max(0, Math.floor(p.y - r)); y <= Math.min(this.gridH - 1, Math.ceil(p.y + r)); y++) {
+            for (let x = Math.max(0, Math.floor(p.x - r)); x <= Math.min(this.gridW - 1, Math.ceil(p.x + r)); x++) {
+              if ((x - p.x) ** 2 + (y - p.y) ** 2 <= r * r) this.grid[y * this.gridW + x] = p.id;
+            }
+          }
+          this.recalcAllPercents();
+          this.renderTerritoryCanvas();
+        }
+        p.vx = 0; p.vy = 0; p.moving = false;
+        p.flicksLeft = 3;
+        p.hasLeft = false;
+        p.path = [{ x: p.x, y: p.y }];
+        p.respawnTimer = 0.9;
+        if (p.id === this.myId && reason) {
+          SoundFX.playFail();
+          showToast(reason);
+        }
+      },
+
+      // 스크린 좌표 -> 확대 카메라 반영 월드 그리드 좌표 변환
+      screenToWorld(clientX, clientY) {
+        const rect = canvas.getBoundingClientRect();
+        const nx = (clientX - rect.left) / rect.width;
+        const ny = (clientY - rect.top) / rect.height;
+        const viewW = this.gridW / this.cam.zoom;
+        const viewH = this.gridH / this.cam.zoom;
+        return {
+          x: (this.cam.x - viewW * 0.5) + nx * viewW,
+          y: (this.cam.y - viewH * 0.5) + ny * viewH
+        };
+      },
+
+      onPointerDown(e) {
+        if (state.status !== 'playing' || state.helpOpen) return;
+        e.preventDefault();
+        SoundFX.ensure();
+
+        // 멀티터치(핀치 줌) 포인터 등록
+        this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (this.activePointers.size === 2) {
+          // 두 손가락 핀치 줌 시작 -> 진행 중이던 슬링샷/패닝 취소
+          this.drag.active = false;
+          this.pan.active = false;
+          const pts = [...this.activePointers.values()];
+          this.pinch.active = true;
+          this.pinch.startDist = Math.max(10, Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y));
+          this.pinch.startZoom = this.cam.zoom;
+          return;
+        }
+        if (this.activePointers.size > 2) return;
+
+        const pt = this.screenToWorld(e.clientX, e.clientY);
+        const me = this.getMe();
+
+        // 1) 플레이어 본인: 내 말 근처 터치 -> 슬링샷 당기기
+        if (!this.isSpectator && me && !me.moving && me.respawnTimer <= 0) {
+          const hitRadius = Math.max(14, 22 / this.cam.zoom);
+          if (Math.hypot(pt.x - me.x, pt.y - me.y) <= hitRadius) {
+            this.drag.active = true;
+            this.drag.pointerId = e.pointerId;
+            this.drag.currWorldX = pt.x;
+            this.drag.currWorldY = pt.y;
+            try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+            return;
+          }
+          // 첫 튕기기 전 내 땅 안을 터치 -> 출발 위치 재배치
+          if (me.flicksLeft === 3 && !me.hasLeft && this.isInside(pt.x, pt.y, me.id) && this.cam.mode !== 'free') {
+            me.x = pt.x; me.y = pt.y;
+            me.path = [{ x: me.x, y: me.y }];
+            SoundFX.playPlace();
+            return;
+          }
+        }
+
+        // 2) 관전자 또는 빈 화면 터치 드래그 -> 자유 시점 이동(패닝)
+        this.pan.active = true;
+        this.pan.pointerId = e.pointerId;
+        this.pan.lastClientX = e.clientX;
+        this.pan.lastClientY = e.clientY;
+        try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+      },
+
+      onPointerMove(e) {
+        if (this.activePointers.has(e.pointerId)) {
+          this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        }
+
+        // 1) 두 손가락 핀치 줌 처리
+        if (this.pinch.active && this.activePointers.size >= 2) {
+          e.preventDefault();
+          const pts = [...this.activePointers.values()];
+          const currDist = Math.max(10, Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y));
+          const ratio = currDist / this.pinch.startDist;
+          this.setZoom(this.pinch.startZoom * ratio);
+          return;
+        }
+
+        // 2) 슬링샷 드래그 처리
+        if (this.drag.active && e.pointerId === this.drag.pointerId) {
+          e.preventDefault();
+          const pt = this.screenToWorld(e.clientX, e.clientY);
+          this.drag.currWorldX = pt.x;
+          this.drag.currWorldY = pt.y;
+          return;
+        }
+
+        // 3) 자유 시점 드래그 패닝 처리
+        if (this.pan.active && e.pointerId === this.pan.pointerId) {
+          e.preventDefault();
+          const dxPx = e.clientX - this.pan.lastClientX;
+          const dyPx = e.clientY - this.pan.lastClientY;
+          this.pan.lastClientX = e.clientX;
+          this.pan.lastClientY = e.clientY;
+
+          if (Math.abs(dxPx) + Math.abs(dyPx) > 0.5 && this.cam.zoom > 1.01) {
+            const rect = canvas.getBoundingClientRect();
+            const viewW = this.gridW / this.cam.zoom;
+            const viewH = this.gridH / this.cam.zoom;
+            this.cam.x -= (dxPx / rect.width) * viewW;
+            this.cam.y -= (dyPx / rect.height) * viewH;
+            this.cam.mode = 'free';
+            this.followTargetId = 0;
+            this.clampCamera();
+            this.drawMinimap();
+          }
+        }
+      },
+
+      onPointerUp(e) {
+        this.activePointers.delete(e.pointerId);
+        if (this.activePointers.size < 2) {
+          this.pinch.active = false;
+        }
+
+        if (this.pan.active && e.pointerId === this.pan.pointerId) {
+          this.pan.active = false;
+          try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+        }
+
+        if (!this.drag.active || e.pointerId !== this.drag.pointerId) return;
+        e.preventDefault();
+        this.drag.active = false;
+        try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+
+        const me = this.getMe();
+        if (!me || me.moving) return;
+        const dx = me.x - this.drag.currWorldX;
+        const dy = me.y - this.drag.currWorldY;
+        const dist = Math.hypot(dx, dy);
+        if (dist >= MIN_PULL_DIST) {
+          const clamped = Math.min(dist, MAX_PULL_DIST);
+          const enemyWeak = this.isInsideEnemy(me.x, me.y, me.id) ? ENEMY_TERRITORY_POWER_MULT : 1.0;
+          const speed = clamped * POWER_SCALE * enemyWeak;
+          me.vx = (dx / dist) * speed;
+          me.vy = (dy / dist) * speed;
+          me.moving = true;
+          me.inEnemyLand = this.isInsideEnemy(me.x, me.y, me.id);
+          me.flicksLeft--;
+          this.cam.mode = 'follow';
+          SoundFX.playFlick(clamped / MAX_PULL_DIST, false);
+        }
+      },
+
+      onWheel(e) {
+        if (state.gameType !== 'realtime' || state.status !== 'playing' || state.helpOpen) return;
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 0.22 : -0.22;
+        this.setZoom(this.cam.zoom + delta);
+      },
+
+      moveCameraByMinimap(clientX, clientY) {
+        if (!this.minimapCanvas) return;
+        const rect = this.minimapCanvas.getBoundingClientRect();
+        const nx = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+        const ny = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+        if (this.cam.zoom <= 1.05) {
+          this.cam.zoom = Math.max(1.5, this.cam.defaultZoom);
+        }
+        this.cam.x = nx * this.gridW;
+        this.cam.y = ny * this.gridH;
+        this.cam.mode = 'free';
+        this.followTargetId = 0;
+        this.clampCamera();
+        this.drawMinimap();
+      },
+
+      update(dt) {
+        if (state.status !== 'playing' || state.helpOpen) return;
+
+        // 1) 경기 타이머 감소
+        this.timeLeft -= dt;
+        if (this.timeLeft <= 0) {
+          this.timeLeft = 0;
+          this.finishRealtimeMatch();
+          return;
+        }
+
+        // 2) 모든 참가자 업데이트 (AI + 물리 + 상대 땅 저항 + 선 끊기)
+        for (const p of this.players) {
+          if (p.respawnTimer > 0) {
+            p.respawnTimer = Math.max(0, p.respawnTimer - dt);
+            continue;
+          }
+
+          // AI 봇 의사결정: 난이도 3단계 (쉬움 / 보통 / 어려움) 차별화
+          if (p.isBot && !p.moving) {
+            p.aiCooldown -= dt;
+            if (p.aiCooldown <= 0) {
+              const diff = this.aiDifficulty;
+              let ang = 0, power = 3.0;
+
+              // 맵 중앙을 향하는 기본 방향 (외곽 스폰이므로 안쪽으로 자연스럽게 확장)
+              const toCenter = Math.atan2(this.gridH * 0.5 - p.y, this.gridW * 0.5 - p.x);
+
+              if (p.flicksLeft === 3) {
+                const spread = diff === 'easy' ? 1.5 : diff === 'hard' ? 0.75 : 1.05;
+                ang = toCenter + (Math.random() - 0.5) * spread * 2;
+                power = diff === 'easy'
+                  ? (1.9 + Math.random() * 1.9)
+                  : diff === 'hard'
+                    ? (3.2 + Math.random() * 2.4)
+                    : (2.6 + Math.random() * 2.2);
+              } else if (p.flicksLeft === 2) {
+                const ret = diff === 'easy'
+                  ? { x: p.homeX, y: p.homeY }
+                  : this.findNearestOwnPoint(p);
+                const toHome = Math.atan2(ret.y - p.y, ret.x - p.x);
+                const side = Math.random() > 0.5 ? 1 : -1;
+                ang = toHome + side * (diff === 'hard' ? 0.92 : 1.08) + (diff === 'easy' ? (Math.random() - 0.5) * 0.7 : 0);
+                power = diff === 'easy'
+                  ? (1.8 + Math.random() * 1.7)
+                  : diff === 'hard'
+                    ? (2.9 + Math.random() * 2.1)
+                    : (2.3 + Math.random() * 1.9);
+              } else {
+                // 마지막 튕기기: 내 땅으로 귀환
+                const ret = diff === 'easy'
+                  ? { x: p.homeX, y: p.homeY, dist: Math.hypot(p.homeX - p.x, p.homeY - p.y) }
+                  : this.findNearestOwnPoint(p);
+                const err = diff === 'easy' ? 0.55 : diff === 'hard' ? 0.08 : 0.24;
+                ang = Math.atan2(ret.y - p.y, ret.x - p.x) + (Math.random() - 0.5) * err;
+                const powerMult = diff === 'hard' ? 0.165 : 0.145;
+                power = Math.min(6.4, Math.max(2.1, ret.dist * powerMult));
+              }
+
+              // AI도 상대 땅 위에서 튕길 때는 세기 약화 적용
+              const aiEnemyWeak = this.isInsideEnemy(p.x, p.y, p.id) ? ENEMY_TERRITORY_POWER_MULT : 1.0;
+              p.vx = Math.cos(ang) * power * aiEnemyWeak;
+              p.vy = Math.sin(ang) * power * aiEnemyWeak;
+              p.moving = true;
+              p.inEnemyLand = this.isInsideEnemy(p.x, p.y, p.id);
+              p.flicksLeft--;
+              p.aiCooldown = diff === 'easy'
+                ? (1.45 + Math.random() * 1.1)
+                : diff === 'hard'
+                  ? (0.28 + Math.random() * 0.32)
+                  : (0.65 + Math.random() * 0.65);
+            }
+          }
+
+          if (p.moving) {
+            const subSteps = 2;
+            const subFactor = (dt * 60) / subSteps;
+            let oob = false;
+
+            for (let s = 0; s < subSteps; s++) {
+              const { gx, gy } = this.sampleSlope(p.x, p.y);
+              p.vx -= gx * (GRAVITY_SCALE * 0.85) * subFactor;
+              p.vy -= gy * (GRAVITY_SCALE * 0.85) * subFactor;
+              p.x += p.vx * subFactor;
+              p.y += p.vy * subFactor;
+
+              // 상대 땅 진입 시 감속 & 저항 증가
+              const inEnemy = this.isInsideEnemy(p.x, p.y, p.id);
+              if (p.id === this.myId && inEnemy && !p.inEnemyLand && Math.hypot(p.vx, p.vy) > 0.6) {
+                this.floatingTexts.push({ x: p.x, y: p.y - 3, text: '🐢 상대 땅 감속!', color: '#7c3aed', life: 0.9 });
+              }
+              p.inEnemyLand = inEnemy;
+
+              const baseFric = inEnemy ? ENEMY_TERRITORY_FRICTION : FRICTION_60FPS;
+              const fric = Math.pow(baseFric, subFactor);
+              p.vx *= fric; p.vy *= fric;
+
+              if (inEnemy) {
+                const spd = Math.hypot(p.vx, p.vy);
+                if (spd > 0.0001) {
+                  const drag = Math.min(spd, ENEMY_TERRITORY_DRAG * subFactor);
+                  p.vx -= (p.vx / spd) * drag;
+                  p.vy -= (p.vy / spd) * drag;
+                }
+              }
+
+              // 장애물 반사
+              for (const o of this.obstacles) {
+                const dx = p.x - o.x, dy = p.y - o.y;
+                const dist = Math.hypot(dx, dy);
+                const minD = STONE_RADIUS + o.r;
+                if (dist < minD && dist > 0.01) {
+                  const nx = dx / dist, ny = dy / dist;
+                  p.x = o.x + nx * minD;
+                  p.y = o.y + ny * minD;
+                  const vn = p.vx * nx + p.vy * ny;
+                  if (vn < 0) {
+                    p.vx -= 1.65 * vn * nx;
+                    p.vy -= 1.65 * vn * ny;
+                  }
+                }
+              }
+
+              if (p.x < 1 || p.x >= this.gridW - 1 || p.y < 1 || p.y >= this.gridH - 1) {
+                oob = true; break;
+              }
+            }
+
+            if (oob) {
+              this.respawnPlayer(p, '아웃! 본진으로 복귀합니다 😅');
+            } else if (Math.hypot(p.vx, p.vy) < STOP_SPEED) {
+              p.vx = 0; p.vy = 0; p.moving = false;
+              const prevPt = p.path[p.path.length - 1];
+              const currPt = { x: p.x, y: p.y };
+
+              // 이동 구간이 내 땅 밖을 지났는지 체크
+              const steps = Math.max(1, Math.ceil(Math.hypot(currPt.x - prevPt.x, currPt.y - prevPt.y) * 1.5));
+              for (let k = 1; k <= steps; k++) {
+                const tt = k / steps;
+                if (!this.isInside(prevPt.x + (currPt.x - prevPt.x) * tt, prevPt.y + (currPt.y - prevPt.y) * tt, p.id)) {
+                  p.hasLeft = true;
+                  break;
+                }
+              }
+              p.path.push(currPt);
+
+              const inOwn = this.isInside(currPt.x, currPt.y, p.id);
+              if (p.hasLeft && inOwn) {
+                this.captureForPlayer(p);
+                p.flicksLeft = 3;
+                p.hasLeft = false;
+                p.path = [currPt];
+              } else if (p.flicksLeft <= 0) {
+                this.respawnPlayer(p, '3번 안에 돌아오지 못해 본진으로 복귀했어요!');
+              } else if (!p.hasLeft && inOwn) {
+                p.path = [currPt];
+              }
+            }
+          }
+        }
+
+        // 3) 카메라 업데이트 (전체 보기 / 자유 관전 / 내 말 또는 선택 학생 추적)
+        if (this.cam.mode === 'overview') {
+          this.cam.x = this.gridW * 0.5;
+          this.cam.y = this.gridH * 0.5;
+        } else if (this.followTargetId > 0) {
+          const targetP = this.players.find(p => p.id === this.followTargetId);
+          if (targetP) {
+            const lerp = Math.min(1, dt * 6.5);
+            this.cam.x += (targetP.x - this.cam.x) * lerp;
+            this.cam.y += (targetP.y - this.cam.y) * lerp;
+            this.clampCamera();
+          }
+        } else if (this.cam.mode === 'follow' && !this.isSpectator) {
+          const me = this.getMe();
+          if (me) {
+            const lerp = Math.min(1, dt * 6.5);
+            this.cam.x += (me.x - this.cam.x) * lerp;
+            this.cam.y += (me.y - this.cam.y) * lerp;
+            this.clampCamera();
+          }
+        }
+
+        // 4) 플로팅 텍스트 감쇠
+        for (let i = this.floatingTexts.length - 1; i >= 0; i--) {
+          this.floatingTexts[i].y -= dt * 10;
+          this.floatingTexts[i].life -= dt * 0.9;
+          if (this.floatingTexts[i].life <= 0) this.floatingTexts.splice(i, 1);
+        }
+
+        // 5) HUD & 미니맵 주기적 갱신 (초당 5회)
+        this.hudSyncAccum += dt;
+        if (this.hudSyncAccum >= 0.2) {
+          this.hudSyncAccum = 0;
+          this.updateHUD();
+          this.drawMinimap();
+        }
+      },
+
+      draw(now) {
+        const w = canvas.width;
+        const h = canvas.height;
+        const viewW = this.gridW / this.cam.zoom;
+        const viewH = this.gridH / this.cam.zoom;
+        const left = this.cam.x - viewW * 0.5;
+        const top = this.cam.y - viewH * 0.5;
+        const scaleX = w / viewW;
+        const scaleY = h / viewH;
+
+        ctx.save();
+        ctx.clearRect(0, 0, w, h);
+
+        // 월드 좌표계 변환 (내 땅 중심 확대 뷰)
+        ctx.scale(scaleX, scaleY);
+        ctx.translate(-left, -top);
+
+        // 1) 전체 지형
+        ctx.drawImage(this.terrainCanvas, 0, 0, this.gridW, this.gridH);
+
+        // 2) 전체 영토 레이어
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(this.territoryCanvas, 0, 0, this.gridW, this.gridH);
+        ctx.imageSmoothingEnabled = true;
+
+        // 3) 장애물
+        for (const o of this.obstacles) {
+          ctx.beginPath();
+          ctx.arc(o.x + 0.7, o.y + 0.9, o.r, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(15, 10, 5, 0.35)';
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
+          ctx.fillStyle = o.type === 'boulder' ? '#78716c' : '#854d27';
+          ctx.fill();
+          ctx.lineWidth = 0.5;
+          ctx.strokeStyle = '#292524';
+          ctx.stroke();
+        }
+
+        // 4) 플레이어 이동 경로 + 말 + 이름표 (화면에 보이는 범위 위주)
+        for (const p of this.players) {
+          // 활성 이동선
+          if (p.path.length > 1 || p.moving) {
+            ctx.beginPath();
+            for (let i = 0; i < p.path.length; i++) {
+              if (i === 0) ctx.moveTo(p.path[i].x, p.path[i].y);
+              else ctx.lineTo(p.path[i].x, p.path[i].y);
+            }
+            if (p.moving) ctx.lineTo(p.x, p.y);
+            ctx.strokeStyle = p.color.hex;
+            ctx.lineWidth = p.id === this.myId ? 1.15 : 0.85;
+            ctx.setLineDash([2.0, 1.3]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+
+          // 뷰포트 밖이면 돌 생략
+          if (p.x < left - 12 || p.x > left + viewW + 12 || p.y < top - 12 || p.y > top + viewH + 12) continue;
+
+          // 그림자
+          ctx.beginPath();
+          ctx.arc(p.x + 0.6, p.y + 0.8, STONE_RADIUS, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(0,0,0,0.35)';
+          ctx.fill();
+
+          // 내 돌 강조 링
+          if (p.id === this.myId) {
+            const pulse = 0.5 + 0.5 * Math.sin(now / 180);
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, STONE_RADIUS + 1.3 + pulse * 0.7, 0, Math.PI * 2);
+            ctx.strokeStyle = '#facc15';
+            ctx.lineWidth = 0.7;
+            ctx.stroke();
+          }
+
+          // 납작돌 본체
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, STONE_RADIUS, 0, Math.PI * 2);
+          ctx.fillStyle = p.color.hex;
+          ctx.fill();
+          ctx.lineWidth = 0.65;
+          ctx.strokeStyle = '#ffffff';
+          ctx.stroke();
+
+          // 이름표
+          ctx.font = `900 3.2px "Noto Sans KR", sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.lineWidth = 0.8;
+          ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+          ctx.strokeText(p.name, p.x, p.y - STONE_RADIUS - 1.5);
+          ctx.fillStyle = p.id === this.myId ? '#1e3a8a' : '#1e293b';
+          ctx.fillText(p.name, p.x, p.y - STONE_RADIUS - 1.5);
+        }
+
+        // 5) 내 슬링샷 조준선
+        const me = this.getMe();
+        if (this.drag.active && me) {
+          const dx = me.x - this.drag.currWorldX;
+          const dy = me.y - this.drag.currWorldY;
+          const dist = Math.hypot(dx, dy);
+          if (dist >= MIN_PULL_DIST) {
+            const clamped = Math.min(dist, MAX_PULL_DIST);
+            const dirX = dx / dist, dirY = dy / dist;
+            const ratio = clamped / MAX_PULL_DIST;
+            const inEnemy = this.isInsideEnemy(me.x, me.y, me.id);
+            const weakMult = inEnemy ? ENEMY_TERRITORY_POWER_MULT : 1.0;
+            const col = inEnemy ? '#7c3aed' : (ratio < 0.45 ? '#10b981' : ratio < 0.8 ? '#f59e0b' : '#ef4444');
+
+            ctx.strokeStyle = inEnemy ? 'rgba(124, 58, 237, 0.78)' : 'rgba(30,41,59,0.75)';
+            ctx.lineWidth = 0.85;
+            ctx.beginPath();
+            ctx.moveTo(me.x, me.y);
+            ctx.lineTo(me.x - dirX * clamped, me.y - dirY * clamped);
+            ctx.stroke();
+
+            for (let i = 1; i <= 10; i++) {
+              ctx.beginPath();
+              ctx.arc(me.x + dirX * clamped * weakMult * (i * 0.14), me.y + dirY * clamped * weakMult * (i * 0.14), 1.05 - i * 0.05, 0, Math.PI * 2);
+              ctx.fillStyle = col;
+              ctx.globalAlpha = 1 - i * 0.08;
+              ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+
+            if (inEnemy) {
+              ctx.font = `900 3.3px "Noto Sans KR", sans-serif`;
+              ctx.textAlign = 'center';
+              ctx.lineWidth = 0.85;
+              ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+              const txt = `🐢 약화 ${Math.round(ratio * 100 * weakMult)}%`;
+              ctx.strokeText(txt, me.x, me.y - STONE_RADIUS - 5.2);
+              ctx.fillStyle = '#7c3aed';
+              ctx.fillText(txt, me.x, me.y - STONE_RADIUS - 5.2);
+            }
+          }
+        }
+
+        // 6) 플로팅 텍스트
+        for (const ft of this.floatingTexts) {
+          ctx.globalAlpha = Math.max(0, ft.life);
+          ctx.font = `900 4.5px "Jua", sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.lineWidth = 1.1;
+          ctx.strokeStyle = '#ffffff';
+          ctx.strokeText(ft.text, ft.x, ft.y);
+          ctx.fillStyle = ft.color;
+          ctx.fillText(ft.text, ft.x, ft.y);
+        }
+        ctx.globalAlpha = 1;
+
+        ctx.restore();
+      },
+
+      // 우하단 전체 맵 미니맵 렌더링 (모든 참가자 땅 점령 상태 + 내 위치 + 확대 뷰포트 박스)
+      drawMinimap() {
+        if (!this.minimapCtx || !this.territoryCanvas) return;
+        const mw = this.minimapCanvas.width;
+        const mh = this.minimapCanvas.height;
+        const mctx = this.minimapCtx;
+
+        mctx.clearRect(0, 0, mw, mh);
+        // 1) 전체 운동장 바탕
+        mctx.fillStyle = '#c8ae84';
+        mctx.fillRect(0, 0, mw, mh);
+
+        // 2) 전체 영토 점령 현황
+        mctx.imageSmoothingEnabled = false;
+        mctx.drawImage(this.territoryCanvas, 0, 0, mw, mh);
+
+        const sx = mw / this.gridW;
+        const sy = mh / this.gridH;
+
+        // 3) 다른 참가자 위치 점
+        for (const p of this.players) {
+          if (p.id === this.myId) continue;
+          mctx.beginPath();
+          mctx.arc(p.x * sx, p.y * sy, 1.8, 0, Math.PI * 2);
+          mctx.fillStyle = p.color.hex;
+          mctx.fill();
+        }
+
+        // 4) 내 위치 강조 점
+        const me = this.getMe();
+        if (me) {
+          mctx.beginPath();
+          mctx.arc(me.x * sx, me.y * sy, 3.4, 0, Math.PI * 2);
+          mctx.fillStyle = '#facc15';
+          mctx.fill();
+          mctx.lineWidth = 1.2;
+          mctx.strokeStyle = '#0f172a';
+          mctx.stroke();
+        }
+
+        // 5) 현재 확대 화면 뷰포트 사각형
+        const viewW = (this.gridW / this.cam.zoom) * sx;
+        const viewH = (this.gridH / this.cam.zoom) * sy;
+        const vx = this.cam.x * sx - viewW * 0.5;
+        const vy = this.cam.y * sy - viewH * 0.5;
+        mctx.strokeStyle = '#ffffff';
+        mctx.lineWidth = 1.5;
+        mctx.strokeRect(vx, vy, viewW, viewH);
+
+        document.getElementById('minimapZoomLabel').textContent = `확대 ${this.cam.zoom.toFixed(1)}x`;
+      },
+
+      updateHUD() {
+        const sorted = [...this.players].sort((a, b) => b.percent - a.percent);
+        const me = this.getMe();
+        const myRank = sorted.findIndex(p => p.id === this.myId) + 1;
+
+        const mins = Math.floor(Math.max(0, this.timeLeft) / 60);
+        const secs = Math.floor(Math.max(0, this.timeLeft) % 60);
+        document.getElementById('rtTimerText').textContent =
+          `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+
+        if (this.isSpectator) {
+          const targetP = this.followTargetId > 0 ? this.players.find(p => p.id === this.followTargetId) : null;
+          document.getElementById('rtMyRankBadge').textContent = targetP ? `${targetP.name} 추적` : (this.cam.mode === 'overview' ? '전체 관전' : '자유 관전');
+          document.getElementById('rtMyPercentHud').textContent = `확대 ${this.cam.zoom.toFixed(1)}x`;
+        } else if (me) {
+          document.getElementById('rtMyRankBadge').textContent = `${myRank}위`;
+          document.getElementById('rtMyPercentHud').textContent = `${me.percent.toFixed(1)}%`;
+          const dotsEl = document.getElementById('rtFlickDots');
+          dotsEl.innerHTML = '';
+          for (let i = 0; i < 3; i++) {
+            const dot = document.createElement('span');
+            dot.className = i < me.flicksLeft
+              ? 'w-2.5 h-2.5 rounded-full bg-indigo-500 border border-indigo-900'
+              : 'w-2.5 h-2.5 rounded-full bg-slate-200 border border-slate-300 scale-75';
+            dotsEl.appendChild(dot);
+          }
+        }
+
+        const lbList = document.getElementById('rtLeaderboardList');
+        lbList.innerHTML = sorted.slice(0, 5).map((p, i) => `
+          <button type="button" data-follow-id="${p.id}" class="w-full flex items-center justify-between gap-2 px-1 py-0.5 rounded hover:bg-white/15 transition text-left ${p.id === this.myId ? 'text-amber-300' : (p.id === this.followTargetId ? 'text-emerald-300 bg-white/10' : 'text-white/90')}" title="클릭하여 ${p.name} 시점으로 관전">
+            <span class="truncate max-w-[96px]">${i + 1}. <span class="inline-block w-2 h-2 rounded-full mr-1" style="background:${p.color.hex}"></span>${p.name}</span>
+            <span class="tabular-nums">${p.percent.toFixed(1)}%</span>
+          </button>
+        `).join('');
+      },
+
+      finishRealtimeMatch() {
+        state.status = 'finished';
+        SoundFX.playWin();
+        const sorted = [...this.players].sort((a, b) => b.percent - a.percent);
+        const champ = sorted[0];
+        const myRank = sorted.findIndex(p => p.id === this.myId) + 1;
+
+        document.getElementById('resultTrophy').textContent = (!this.isSpectator && myRank === 1) ? '👑' : '🏆';
+        document.getElementById('resultTitle').textContent = `${champ.name} 우승!`;
+        document.getElementById('resultTitle').className = 'font-title text-3xl text-indigo-600 mb-1';
+        document.getElementById('resultReason').textContent = this.isSpectator
+          ? `실시간 배틀 종료! 총 ${sorted.length}명 최종 순위입니다.`
+          : `실시간 배틀 종료! 내 최종 순위: ${myRank}위 / ${sorted.length}명`;
+
+        document.getElementById('turnResultCards').classList.add('hidden');
+        const listEl = document.getElementById('rtResultList');
+        listEl.classList.remove('hidden');
+        listEl.innerHTML = sorted.slice(0, 10).map((p, idx) => `
+          <div class="flex items-center justify-between px-2.5 py-1.5 rounded-xl ${p.id === this.myId ? 'bg-amber-100 border border-amber-400 font-black' : 'bg-white/80'}">
+            <div class="flex items-center gap-2 text-xs sm:text-sm">
+              <span class="w-5 text-center font-black ${idx === 0 ? 'text-amber-600' : 'text-slate-500'}">${idx + 1}</span>
+              <span class="w-3 h-3 rounded-full inline-block" style="background:${p.color.hex}"></span>
+              <span class="text-slate-800">${p.name}${p.id === this.myId ? ' (나)' : ''}</span>
+            </div>
+            <span class="font-title text-sm sm:text-base text-indigo-700">${p.percent.toFixed(1)}%</span>
+          </div>
+        `).join('');
+
+        document.getElementById('resultModal').classList.remove('hidden');
+      },
+
+      // 학급 실시간 QR 방 생성 (선생님 관전자 전용 선택 시 플레이어 명단에서 제외)
+      async createOnlineRealtimeRoom() {
+        const asSpectator = document.getElementById('hostSpectatorCheck')?.checked ?? true;
+        const nick = document.getElementById('rtNicknameInput').value.trim() || '선생님';
+        const code = String(Math.floor(1000 + Math.random() * 9000));
+        this.rtRoomCode = code;
+        this.rtIsHost = true;
+        this.rtHostAsSpectator = asSpectator;
+        this.rtRoomPlayers = asSpectator
+          ? []
+          : [{ uid: currentUser?.uid || 'local_host', name: nick, avatar: this.myAvatar }];
+
+        const updateJoinedUI = (list) => {
+          this.rtRoomPlayers = list;
+          const cnt = list.length;
+          const dims = this.getMapDims(Math.max(2, cnt));
+          document.getElementById('qrJoinedCountText').textContent = asSpectator
+            ? `입장 학생: ${cnt}명 (선생님은 관전자 전용 · 자동 ${dims.label})`
+            : `현재 입장: ${cnt}명 (자동 ${dims.label})`;
+          const listEl = document.getElementById('qrJoinedList');
+          listEl.classList.remove('hidden');
+          listEl.innerHTML = cnt > 0
+            ? list.map(p => `<span class="px-2 py-0.5 rounded-full bg-white border border-indigo-200 text-[10px] font-bold text-indigo-800">${p.name}</span>`).join('')
+            : `<span class="text-[10px] font-bold text-slate-400">학생들의 QR 입장을 기다리는 중...</span>`;
+        };
+
+        if (firebaseReady && currentUser) {
+          try {
+            const roomRef = fbFirestore.doc(db, 'artifacts', appId, 'public', 'data', 'rt_rooms', code);
+            await fbFirestore.setDoc(roomRef, {
+              code,
+              status: 'waiting',
+              maxPlayers: 30,
+              duration: this.selectedDuration,
+              seed: Math.floor(Math.random() * 9999999) + 1,
+              hostUid: currentUser.uid,
+              hostIsSpectator: asSpectator,
+              players: this.rtRoomPlayers
+            });
+            if (this.unsubRtRoom) this.unsubRtRoom();
+            this.unsubRtRoom = fbFirestore.onSnapshot(roomRef, (snap) => {
+              if (!snap.exists()) return;
+              const d = snap.data();
+              const list = Array.isArray(d.players) ? d.players : this.rtRoomPlayers;
+              updateJoinedUI(list);
+            }, () => {});
+          } catch (err) {
+            console.warn('실시간 방 DB 저장 생략:', err);
+          }
+        } else {
+          updateJoinedUI(this.rtRoomPlayers);
+          document.getElementById('qrJoinedCountText').textContent = asSpectator
+            ? `오프라인 체험: [지금 시작!]을 누르면 관전자 모드로 AI 대전을 관전합니다.`
+            : `오프라인 체험: [지금 시작!]을 누르면 AI와 실시간 대전을 시작합니다.`;
+        }
+
+        openQrModal({
+          title: `학급 실시간 방 [${code}]`,
+          desc: asSpectator
+            ? `선생님은 관전자 전용(플레이어 제외)! 들어온 학생 수대로 맵 크기가 자동 조절됩니다.`
+            : `학생들이 QR로 들어온 인원수대로 맵 크기가 자동 조절됩니다!`,
+          url: buildJoinUrl(code, 'realtime'),
+          roomCode: code,
+          showStartBtn: true
+        });
+      },
+
+      async hostStartOnlineRealtimeRoom() {
+        const nick = document.getElementById('rtNicknameInput').value.trim() || '선생님';
+        const seed = Math.floor(Math.random() * 9999999) + 1;
+        const asSpectator = this.rtHostAsSpectator;
+
+        if (firebaseReady && currentUser && this.rtRoomCode) {
+          try {
+            const roomRef = fbFirestore.doc(db, 'artifacts', appId, 'public', 'data', 'rt_rooms', this.rtRoomCode);
+            const snap = await fbFirestore.getDoc(roomRef);
+            if (snap.exists()) {
+              const d = snap.data();
+              const players = Array.isArray(d.players) ? d.players : this.rtRoomPlayers;
+              await fbFirestore.updateDoc(roomRef, { status: 'playing', seed: d.seed || seed });
+              const count = Math.max(2, players.length);
+              const isAiFallback = players.length < 2;
+              this.startRealtimeMatch(
+                d.seed || seed,
+                nick,
+                isAiFallback ? null : players,
+                isAiFallback ? Math.max(2, this.aiCount + (asSpectator ? 0 : 1)) : count,
+                isAiFallback,
+                asSpectator
+              );
+              return;
+            }
+          } catch (err) {
+            console.warn('방 시작 업데이트 생략:', err);
+          }
+        }
+        // 오프라인/미연결 시 즉시 체험 시작
+        const simCount = asSpectator ? Math.max(2, this.aiCount) : (this.aiCount + 1);
+        this.startRealtimeMatch(seed, nick, null, simCount, true, asSpectator);
+      },
+
+      async joinOnlineRealtimeRoom(code, asSpectator = false) {
+        if (!/^\d{4}$/.test(code)) {
+          showToast('4자리 방 코드를 입력해주세요!');
+          return;
+        }
+        const nick = document.getElementById('rtNicknameInput').value.trim() || (asSpectator ? '관전자' : '학생');
+        this.rtRoomCode = code;
+        this.rtIsHost = false;
+
+        if (firebaseReady && currentUser) {
+          try {
+            const roomRef = fbFirestore.doc(db, 'artifacts', appId, 'public', 'data', 'rt_rooms', code);
+            const snap = await fbFirestore.getDoc(roomRef);
+            if (!snap.exists()) { showToast('존재하지 않는 실시간 방 코드입니다.'); return; }
+            const d = snap.data();
+            const players = Array.isArray(d.players) ? [...d.players] : [];
+
+            // 관전자는 players 배열에 절대 추가하지 않음!
+            if (!asSpectator && !players.some(p => p.uid === currentUser.uid)) {
+              if (players.length >= 30) { showToast('방 인원(최대 30명)이 가득 찼습니다!'); return; }
+              players.push({ uid: currentUser.uid, name: nick, avatar: this.myAvatar });
+              await fbFirestore.updateDoc(roomRef, { players });
+            }
+            this.selectedDuration = d.duration || 180;
+
+            if (d.status === 'playing') {
+              const isAiFallback = players.length < 2;
+              this.startRealtimeMatch(
+                d.seed,
+                nick,
+                isAiFallback ? null : players,
+                isAiFallback ? Math.max(2, this.aiCount) : players.length,
+                isAiFallback,
+                asSpectator
+              );
+              return;
+            }
+
+            // 호스트가 시작 버튼을 누를 때까지 대기하면서 실시간 입장 인원 표시
+            openQrModal({
+              title: asSpectator ? `👁️ 관전자 대기 [${code}]` : `실시간 방 [${code}] 입장 완료!`,
+              desc: asSpectator
+                ? `플레이어에 포함되지 않은 관전자 전용 입장입니다. 경기가 시작되면 전체 화면으로 관전합니다.`
+                : `선생님이 [지금 시작!]을 누르면 입장한 학생 수에 맞춰 자동으로 시작됩니다.`,
+              url: buildJoinUrl(code, 'realtime'),
+              roomCode: code,
+              showStartBtn: false
+            });
+            if (this.unsubRtRoom) this.unsubRtRoom();
+            this.unsubRtRoom = fbFirestore.onSnapshot(roomRef, (s) => {
+              if (!s.exists()) return;
+              const cur = s.data();
+              const list = Array.isArray(cur.players) ? cur.players : [];
+              const dims = this.getMapDims(Math.max(2, list.length));
+              document.getElementById('qrJoinedCountText').textContent = `입장 학생: ${list.length}명 (자동 ${dims.label})`;
+              const listEl = document.getElementById('qrJoinedList');
+              listEl.classList.remove('hidden');
+              listEl.innerHTML = list.map(p => `<span class="px-2 py-0.5 rounded-full bg-white border border-indigo-200 text-[10px] font-bold text-indigo-800">${p.name}</span>`).join('');
+              if (cur.status === 'playing' && state.status !== 'playing') {
+                const isAiFallback = list.length < 2;
+                this.startRealtimeMatch(
+                  cur.seed,
+                  nick,
+                  isAiFallback ? null : list,
+                  isAiFallback ? Math.max(2, this.aiCount) : list.length,
+                  isAiFallback,
+                  asSpectator
+                );
+              }
+            }, () => {});
+            return;
+          } catch (err) {
+            console.warn(err);
+          }
+        }
+        // Firebase 미설정 시에도 즉시 실시간/관전 체험 입장 가능
+        const simCount = asSpectator ? Math.max(2, this.aiCount) : (this.aiCount + 1);
+        showToast(asSpectator ? `👁️ 방 [${code}] 관전자 모드로 입장합니다!` : `방 [${code}] 실시간 모드로 입장합니다!`);
+        this.startRealtimeMatch(parseInt(code, 10) * 7919, nick, null, simCount, true, asSpectator);
+      },
+
+      startRealtimeMatch(seed, humanName, onlinePlayers = null, totalPlayers = null, isComputerMode = true, isSpectator = false) {
+        const count = totalPlayers || (onlinePlayers ? Math.max(2, onlinePlayers.length) : (isSpectator ? Math.max(2, this.aiCount) : this.aiCount + 1));
+        state.gameType = 'realtime';
+        state.status = 'playing';
+        document.getElementById('lobbyModal').classList.add('hidden');
+        document.getElementById('qrModal').classList.add('hidden');
+        document.getElementById('resultModal').classList.add('hidden');
+        this.switchUI(true);
+        resizeCanvas();
+        this.initWorld(count, this.selectedDuration, seed, humanName, onlinePlayers, isComputerMode, isSpectator);
+        SoundFX.playCapture();
+        BGMPlayer.start();
+        showToast(isSpectator
+          ? `👁️ 관전자 전용 모드 (${count}명 대전) · 확대/축소와 미니맵으로 자유롭게 관전하세요!`
+          : isComputerMode
+            ? `🤖 컴퓨터 ${count - 1}명(${this.getDifficultyLabel()})과 대결 시작!`
+            : `⚡ ${count}명 실시간 배틀 시작! 외곽 거점에서 땅을 넓히세요!`);
+      }
+    };
+
+    function renderRtAvatarPicker() {
+      const picker = document.getElementById('rtAvatarPicker');
+      const preview = document.getElementById('rtLobbyPreview');
+      if (!picker || !preview) return;
+      preview.innerHTML = renderAvatarSVG(RT.myAvatar, 'happy', 1);
+      picker.innerHTML = '';
+      AVATAR_CATALOG.forEach((av) => {
+        const isSel = av.id === RT.myAvatar;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `p-0.5 rounded-xl border-2 transition ${isSel ? 'border-indigo-600 bg-indigo-100 scale-105' : 'border-transparent bg-white/80 hover:bg-white'}`;
+        btn.innerHTML = renderAvatarSVG(av.id, isSel ? 'happy' : 'normal', 1);
+        btn.addEventListener('click', () => {
+          SoundFX.playClick();
+          RT.myAvatar = av.id;
+          renderRtAvatarPicker();
+        });
+        picker.appendChild(btn);
+      });
+    }
+
+    // =========================================================================
+    // 14-B. 로비 아바타 선택기 & 선후공 결정 룰렛 시스템
+    // =========================================================================
+    function renderLobbyAvatarPickers() {
+      [1, 2].forEach((team) => {
+        const picker = document.getElementById(team === 1 ? 'p1AvatarPicker' : 'p2AvatarPicker');
+        const preview = document.getElementById(team === 1 ? 'p1LobbyPreview' : 'p2LobbyPreview');
+        const selectedId = team === 1 ? state.p1Avatar : state.p2Avatar;
+
+        preview.innerHTML = renderAvatarSVG(selectedId, 'happy', team);
+        picker.innerHTML = '';
+
+        AVATAR_CATALOG.forEach((av) => {
+          const isSel = av.id === selectedId;
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.title = av.name;
+          btn.className = `p-0.5 rounded-xl border-2 transition transform active:scale-95 ${
+            isSel
+              ? (team === 1 ? 'border-blue-600 bg-blue-100 scale-105 shadow-sm' : 'border-red-600 bg-red-100 scale-105 shadow-sm')
+              : 'border-transparent bg-white/80 hover:bg-white'
+          }`;
+          btn.innerHTML = renderAvatarSVG(av.id, isSel ? 'happy' : 'normal', team);
+          btn.addEventListener('click', () => {
+            SoundFX.playClick();
+            if (team === 1) state.p1Avatar = av.id;
+            else state.p2Avatar = av.id;
+            renderLobbyAvatarPickers();
+            updateAvatarsUI(true);
+          });
+          picker.appendChild(btn);
+        });
+      });
+    }
+
+    const Roulette = {
+      spinning: false,
+      currentDeg: 0,
+      decidedFirst: 1,
+
+      drawWheel() {
+        const svg = document.getElementById('rouletteSvg');
+        const sliceCount = 6;
+        const cx = 100, cy = 100, r = 98;
+        let html = '';
+
+        for (let i = 0; i < sliceCount; i++) {
+          const isP1 = i % 2 === 0;
+          const startDeg = -90 + i * 60;
+          const endDeg = startDeg + 60;
+          const sRad = (startDeg * Math.PI) / 180;
+          const eRad = (endDeg * Math.PI) / 180;
+          const x1 = cx + r * Math.cos(sRad);
+          const y1 = cy + r * Math.sin(sRad);
+          const x2 = cx + r * Math.cos(eRad);
+          const y2 = cy + r * Math.sin(eRad);
+
+          const fill = isP1 ? (i === 0 ? '#3b82f6' : '#2563eb') : (i === 1 ? '#ef4444' : '#dc2626');
+          html += `<path d="M${cx},${cy} L${x1.toFixed(1)},${y1.toFixed(1)} A${r},${r} 0 0,1 ${x2.toFixed(1)},${y2.toFixed(1)} Z" fill="${fill}" stroke="#ffffff" stroke-width="2.5"/>`;
+
+          const midDeg = startDeg + 30;
+          const midRad = (midDeg * Math.PI) / 180;
+          const tx = cx + 62 * Math.cos(midRad);
+          const ty = cy + 62 * Math.sin(midRad);
+          const label = (isP1 ? state.p1Name : state.p2Name).slice(0, 5);
+          html += `
+            <text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" fill="#ffffff" font-size="13" font-weight="900"
+              text-anchor="middle" dominant-baseline="middle"
+              transform="rotate(${midDeg + 90} ${tx.toFixed(1)} ${ty.toFixed(1)})">${label}</text>
+          `;
+        }
+        svg.innerHTML = html;
+      },
+
+      open() {
+        this.spinning = false;
+        this.currentDeg = 0;
+        const wheel = document.getElementById('rouletteWheel');
+        wheel.style.transition = 'none';
+        wheel.style.transform = 'rotate(0deg)';
+
+        document.getElementById('rouletteP1Name').textContent = state.p1Name;
+        document.getElementById('rouletteP2Name').textContent = state.p2Name;
+        document.getElementById('rouletteP1Avatar').innerHTML = renderAvatarSVG(state.p1Avatar, 'normal', 1);
+        document.getElementById('rouletteP2Avatar').innerHTML = renderAvatarSVG(state.p2Avatar, 'normal', 2);
+
+        this.drawWheel();
+
+        document.getElementById('rouletteStatusText').textContent = '버튼을 눌러 선공 팀을 정해보세요!';
+        document.getElementById('rouletteStatusText').className = 'text-sm font-bold text-stone-600';
+        document.getElementById('spinRouletteBtn').classList.remove('hidden');
+        document.getElementById('spinRouletteBtn').disabled = false;
+        document.getElementById('startAfterRouletteBtn').classList.add('hidden');
+        document.getElementById('rouletteModal').classList.remove('hidden');
+      },
+
+      spin() {
+        if (this.spinning) return;
+        this.spinning = true;
+        SoundFX.ensure();
+        BGMPlayer.start();
+
+        const spinBtn = document.getElementById('spinRouletteBtn');
+        spinBtn.disabled = true;
+        document.getElementById('rouletteStatusText').textContent = '두근두근... 선공 팀을 뽑는 중!';
+        document.getElementById('rouletteP1Avatar').innerHTML = renderAvatarSVG(state.p1Avatar, 'nervous', 1);
+        document.getElementById('rouletteP2Avatar').innerHTML = renderAvatarSVG(state.p2Avatar, 'nervous', 2);
+
+        const winner = Math.random() < 0.5 ? 1 : 2;
+        this.decidedFirst = winner;
+
+        const targetSlices = winner === 1 ? [0, 2, 4] : [1, 3, 5];
+        const chosenSlice = targetSlices[Math.floor(Math.random() * targetSlices.length)];
+        const sliceOffset = 12 + Math.random() * 36;
+        const angleInWheel = chosenSlice * 60 + sliceOffset;
+        const stopMod = (360 - angleInWheel) % 360;
+        const totalDeg = 360 * 5 + stopMod;
+
+        const duration = 3100;
+        const startTime = performance.now();
+        let lastSliceTick = -1;
+        const wheel = document.getElementById('rouletteWheel');
+
+        const animateSpin = (now) => {
+          const elapsed = now - startTime;
+          const t = Math.min(1, elapsed / duration);
+          const ease = 1 - Math.pow(1 - t, 4);
+          const deg = totalDeg * ease;
+          wheel.style.transform = `rotate(${deg}deg)`;
+
+          const slicePassed = Math.floor(deg / 60);
+          if (slicePassed !== lastSliceTick) {
+            lastSliceTick = slicePassed;
+            SoundFX.playRouletteTick(0.9 + (1 - t) * 0.35);
+          }
+
+          if (t < 1) {
+            requestAnimationFrame(animateSpin);
+          } else {
+            this.spinning = false;
+            SoundFX.playCapture();
+
+            const winName = winner === 1 ? state.p1Name : state.p2Name;
+            const statusEl = document.getElementById('rouletteStatusText');
+            statusEl.textContent = `🎉 [${winName}] 선공 당첨! 먼저 튕깁니다!`;
+            statusEl.className = `font-title text-lg sm:text-xl ${winner === 1 ? 'text-blue-600' : 'text-red-600'}`;
+
+            document.getElementById('rouletteP1Avatar').innerHTML = renderAvatarSVG(state.p1Avatar, winner === 1 ? 'happy' : 'nervous', 1);
+            document.getElementById('rouletteP2Avatar').innerHTML = renderAvatarSVG(state.p2Avatar, winner === 2 ? 'happy' : 'nervous', 2);
+
+            spinBtn.classList.add('hidden');
+            document.getElementById('startAfterRouletteBtn').classList.remove('hidden');
+          }
+        };
+
+        requestAnimationFrame(animateSpin);
+      }
+    };
+
+    // =========================================================================
+    // 15. 버튼 이벤트 바인딩
+    // =========================================================================
+    function setLobbyModeTab(mode) {
+      const isRt = mode === 'realtime';
+      document.getElementById('turnModePanel').classList.toggle('hidden', isRt);
+      document.getElementById('realtimeModePanel').classList.toggle('hidden', !isRt);
+      document.getElementById('tabTurnMode').className = !isRt
+        ? 'py-2 rounded-xl font-black text-xs sm:text-sm bg-white text-blue-700 shadow-sm border border-blue-200 transition'
+        : 'py-2 rounded-xl font-black text-xs sm:text-sm text-stone-600 hover:text-stone-900 transition';
+      document.getElementById('tabRealtimeMode').className = isRt
+        ? 'py-2 rounded-xl font-black text-xs sm:text-sm bg-white text-indigo-700 shadow-sm border border-indigo-200 transition'
+        : 'py-2 rounded-xl font-black text-xs sm:text-sm text-stone-600 hover:text-stone-900 transition';
+    }
+    document.getElementById('tabTurnMode').addEventListener('click', () => { SoundFX.playClick(); setLobbyModeTab('turn'); });
+    document.getElementById('tabRealtimeMode').addEventListener('click', () => { SoundFX.playClick(); setLobbyModeTab('realtime'); });
+
+    // 컴퓨터(AI) 인원수 조절 (1 ~ 29명) & 맵 크기 실시간 미리보기 갱신
+    function updateAiConfigUI() {
+      const total = RT.aiCount + 1;
+      const dims = RT.getMapDims(total);
+      document.getElementById('aiCountRange').value = RT.aiCount;
+      document.getElementById('aiCountLabel').textContent = `${RT.aiCount}명`;
+      document.getElementById('rtMapPreviewHint').textContent = `총 ${total}명 · ${dims.label}`;
+      document.getElementById('startRealtimeSoloBtn').innerHTML = `<span class="text-base">🤖</span><span>컴퓨터 ${RT.aiCount}명과 대결 시작! (총 ${total}명 · ${RT.getDifficultyLabel()})</span>`;
+    }
+
+    document.getElementById('aiCountRange').addEventListener('input', (e) => {
+      RT.aiCount = Math.max(1, Math.min(29, parseInt(e.target.value, 10) || 1));
+      updateAiConfigUI();
+    });
+    document.getElementById('aiCountMinus').addEventListener('click', () => {
+      SoundFX.playClick();
+      RT.aiCount = Math.max(1, RT.aiCount - 1);
+      updateAiConfigUI();
+    });
+    document.getElementById('aiCountPlus').addEventListener('click', () => {
+      SoundFX.playClick();
+      RT.aiCount = Math.min(29, RT.aiCount + 1);
+      updateAiConfigUI();
+    });
+
+    // 컴퓨터 난이도 3단계 선택 (쉬움 / 보통 / 어려움)
+    document.querySelectorAll('#aiDifficultySelector .ai-diff-opt').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        SoundFX.playClick();
+        RT.aiDifficulty = btn.dataset.diff || 'normal';
+        document.querySelectorAll('#aiDifficultySelector .ai-diff-opt').forEach((b) => {
+          b.className = b === btn
+            ? 'ai-diff-opt py-1.5 rounded-xl text-xs font-bold border-2 border-indigo-500 bg-indigo-50 text-indigo-700 shadow-sm'
+            : 'ai-diff-opt py-1.5 rounded-xl text-xs font-bold border-2 border-sky-200 bg-white text-slate-600';
+        });
+        updateAiConfigUI();
+      });
+    });
+
+    // 실시간 경기 시간 선택
+    document.querySelectorAll('#rtDurationSelector .rt-dur-opt').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        SoundFX.playClick();
+        RT.selectedDuration = parseInt(btn.dataset.sec, 10) || 180;
+        document.querySelectorAll('#rtDurationSelector .rt-dur-opt').forEach((b) => {
+          b.className = b === btn
+            ? 'rt-dur-opt py-1 rounded-xl text-xs font-bold border-2 border-indigo-500 bg-indigo-50 text-indigo-700 shadow-sm'
+            : 'rt-dur-opt py-1 rounded-xl text-xs font-bold border-2 border-amber-200 bg-white text-slate-600';
+        });
+      });
+    });
+
+    // 실시간 모드 실행 버튼들
+    document.getElementById('startRealtimeSoloBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      const nick = document.getElementById('rtNicknameInput').value.trim() || '우리반 대표';
+      RT.startRealtimeMatch(Math.floor(Math.random() * 9999999) + 1, nick, null, RT.aiCount + 1, true, false);
+    });
+    document.getElementById('watchAiBattleBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      const botTotal = Math.max(2, RT.aiCount);
+      RT.startRealtimeMatch(Math.floor(Math.random() * 9999999) + 1, '선생님', null, botTotal, true, true);
+    });
+    document.getElementById('createRtRoomBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      RT.createOnlineRealtimeRoom();
+    });
+    document.getElementById('joinRtRoomBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      RT.joinOnlineRealtimeRoom(document.getElementById('joinRtCodeInput').value.trim(), false);
+    });
+    document.getElementById('spectateRtRoomBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      RT.joinOnlineRealtimeRoom(document.getElementById('joinRtCodeInput').value.trim(), true);
+    });
+    document.getElementById('qrStartRtNowBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      RT.hostStartOnlineRealtimeRoom();
+    });
+    // 실시간 카메라 줌, 전체 보기, 내 위치, 마우스 휠, 미니맵 터치 이동, 순위표 클릭 추적
+    document.getElementById('rtZoomInBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      RT.setZoom(RT.cam.zoom + 0.25);
+    });
+    document.getElementById('rtZoomOutBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      RT.setZoom(RT.cam.zoom - 0.25);
+    });
+    document.getElementById('rtOverviewBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      RT.setOverviewMode();
+    });
+    document.getElementById('rtRecenterBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      RT.recenterOnMe();
+    });
+    document.getElementById('rtLobbyBtn').addEventListener('click', returnToLobby);
+
+    // PC 마우스 휠 확대/축소
+    canvas.addEventListener('wheel', (e) => RT.onWheel(e), { passive: false });
+
+    // 미니맵 터치/드래그로 시점 즉시 이동
+    const minimapEl = document.getElementById('minimapCanvas');
+    minimapEl.addEventListener('pointerdown', (e) => {
+      if (state.gameType !== 'realtime') return;
+      e.preventDefault();
+      RT.minimapDragging = true;
+      try { minimapEl.setPointerCapture(e.pointerId); } catch (_) {}
+      RT.moveCameraByMinimap(e.clientX, e.clientY);
+    });
+    minimapEl.addEventListener('pointermove', (e) => {
+      if (!RT.minimapDragging || state.gameType !== 'realtime') return;
+      e.preventDefault();
+      RT.moveCameraByMinimap(e.clientX, e.clientY);
+    });
+    const endMinimapDrag = (e) => {
+      if (!RT.minimapDragging) return;
+      RT.minimapDragging = false;
+      try { minimapEl.releasePointerCapture(e.pointerId); } catch (_) {}
+    };
+    minimapEl.addEventListener('pointerup', endMinimapDrag);
+    minimapEl.addEventListener('pointercancel', endMinimapDrag);
+
+    // 실시간 TOP 5 순위표 클릭 시 해당 학생 시점으로 따라가기 관전
+    document.getElementById('rtLeaderboardList').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-follow-id]');
+      if (!btn || state.gameType !== 'realtime') return;
+      SoundFX.playClick();
+      const targetId = parseInt(btn.dataset.followId, 10);
+      if (targetId === RT.myId && !RT.isSpectator) {
+        RT.recenterOnMe();
+        return;
+      }
+      RT.followTargetId = targetId;
+      RT.cam.mode = 'free';
+      if (RT.cam.zoom <= 1.1) RT.cam.zoom = Math.max(1.5, RT.cam.defaultZoom);
+      const targetP = RT.players.find(p => p.id === targetId);
+      if (targetP) showToast(`👁️ [${targetP.name}] 학생 시점으로 관전합니다!`);
+    });
+
+    // 로비 접속 QR & 실시간 방 QR 초대 모달
+    document.getElementById('openPageQrBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      openQrModal({
+        title: '운동장 땅따먹기 접속 QR',
+        desc: '학생들이 패드 카메라로 스캔하면 이 게임 페이지로 바로 들어옵니다!',
+        url: buildJoinUrl('', 'turn')
+      });
+    });
+    document.getElementById('rtQrShareBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      openQrModal({
+        title: '실시간 게임 초대 QR',
+        desc: '친구 패드 카메라로 찍으면 바로 게임 페이지로 연결됩니다!',
+        url: buildJoinUrl(RT.rtRoomCode || '', 'realtime'),
+        roomCode: RT.rtRoomCode || ''
+      });
+    });
+    document.getElementById('closeQrModalBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      document.getElementById('qrModal').classList.add('hidden');
+    });
+    document.getElementById('copyQrLinkBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      const ta = document.createElement('textarea');
+      ta.value = activeQrUrl;
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); showToast('🔗 접속 링크를 복사했어요!'); }
+      catch (_) { showToast(activeQrUrl); }
+      document.body.removeChild(ta);
+    });
+
+    document.getElementById('itemPowerBtn').addEventListener('click', () => {
+      if (!canUserInteract() || state.powerBoostActive) return;
+      const p = state.currentTurn;
+      if (state.inventories[p].power <= 0) return;
+      state.inventories[p].power--;
+      state.powerBoostActive = true;
+      state.bombTargeting = false;
+      document.getElementById('bombTargetBanner').classList.add('hidden');
+      SoundFX.playPickup();
+      showToast('⚡ 파워 업 장착! 다음 튕기기 파워 1.55배!');
+      updateItemDock();
+      updateStatusGuide();
+    });
+
+    document.getElementById('itemExtraBtn').addEventListener('click', async () => {
+      if (!canUserInteract()) return;
+      const p = state.currentTurn;
+      if (state.inventories[p].extraFlick <= 0 || state.nextTurnBonus[p]) return;
+      state.inventories[p].extraFlick--;
+      state.nextTurnBonus[p] = true;
+      SoundFX.playPickup();
+      showToast('🪨 다음 턴 튕기기 횟수 +1 예약 완료! (4회)');
+      updateHUD();
+      updateItemDock();
+      if (state.mode === 'online') {
+        await pushOnlineState({
+          actionType: 'buff',
+          from: { x: state.stone.x, y: state.stone.y },
+          to: { x: state.stone.x, y: state.stone.y },
+          winner: null, winReason: '', message: ''
+        });
+      }
+    });
+
+    document.getElementById('itemBombBtn').addEventListener('click', () => {
+      if (!canUserInteract()) return;
+      const p = state.currentTurn;
+      if (!state.bombTargeting && state.inventories[p].bomb <= 0) return;
+
+      state.bombTargeting = !state.bombTargeting;
+      document.getElementById('bombTargetBanner').classList.toggle('hidden', !state.bombTargeting);
+      SoundFX.playPlace();
+      updateShotClockUI();
+      updateItemDock();
+      updateStatusGuide();
+    });
+
+    document.querySelectorAll('#roundSelector .round-opt').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        SoundFX.playClick();
+        state.maxRounds = parseInt(btn.dataset.rounds, 10) || 12;
+        document.querySelectorAll('#roundSelector .round-opt').forEach((b) => {
+          const active = b === btn;
+          b.className = active
+            ? 'round-opt py-1.5 rounded-xl text-xs sm:text-sm font-bold border-2 border-blue-500 bg-blue-50 text-blue-700 shadow-sm transition'
+            : 'round-opt py-1.5 rounded-xl text-xs sm:text-sm font-bold border-2 border-amber-200 bg-white text-slate-600 hover:bg-amber-100 transition';
+        });
+      });
+    });
+
+    function openLocalRoulette() {
+      if (state.unsubRoom) { state.unsubRoom(); state.unsubRoom = null; }
+      state.gameType = 'turn';
+      RT.switchUI(false);
+      state.mode = 'local';
+      state.roomCode = null;
+      state.status = 'lobby';
+
+      const p1Nick = document.getElementById('p1NicknameInput').value.trim();
+      const p2Nick = document.getElementById('p2NicknameInput').value.trim();
+      state.p1Name = p1Nick || '파랑팀';
+      state.p2Name = p2Nick || '빨강팀';
+
+      document.getElementById('roomCodeBadge').classList.add('hidden');
+      document.getElementById('lobbyModal').classList.add('hidden');
+      document.getElementById('resultModal').classList.add('hidden');
+
+      SoundFX.playClick();
+      Roulette.open();
+    }
+
+    function launchLocalMatchWithFirst(firstPlayer) {
+      document.getElementById('rouletteModal').classList.add('hidden');
+      state.status = 'playing';
+
+      const newSeed = Math.floor(Math.random() * 9999999) + 1;
+      startFreshMatchData(newSeed, firstPlayer);
+      SoundFX.playCapture();
+      BGMPlayer.start();
+      const firstName = firstPlayer === 1 ? state.p1Name : state.p2Name;
+      showToast(`새 운동장 완성! 선공 [${firstName}]부터 5초 안에 튕기세요!`);
+    }
+
+    document.getElementById('startLocalBtn').addEventListener('click', openLocalRoulette);
+    document.getElementById('spinRouletteBtn').addEventListener('click', () => Roulette.spin());
+    document.getElementById('startAfterRouletteBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      launchLocalMatchWithFirst(Roulette.decidedFirst);
+    });
+    document.getElementById('createRoomBtn').addEventListener('click', () => { SoundFX.playClick(); BGMPlayer.start(); createOnlineRoom(); });
+    document.getElementById('joinRoomBtn').addEventListener('click', () => { SoundFX.playClick(); BGMPlayer.start(); joinOnlineRoom(); });
+
+    document.getElementById('copyCodeBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      const code = state.roomCode || document.getElementById('waitingRoomCode').textContent.trim();
+      const ta = document.createElement('textarea');
+      ta.value = code;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        showToast(`📋 방 코드 [${code}] 복사 완료!`);
+      } catch (_) {
+        showToast(`방 코드: ${code}`);
+      }
+      document.body.removeChild(ta);
+    });
+
+    document.getElementById('cancelWaitBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      returnToLobby();
+    });
+
+    document.getElementById('bgmBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      if (SoundFX.muted) {
+        SoundFX.muted = false;
+        document.getElementById('soundOnIcon').classList.remove('hidden');
+        document.getElementById('soundOffIcon').classList.add('hidden');
+      }
+      BGMPlayer.enabled = true;
+      BGMPlayer.nextTrack(true);
+    });
+
+    document.getElementById('muteBtn').addEventListener('click', () => {
+      SoundFX.muted = !SoundFX.muted;
+      document.getElementById('soundOnIcon').classList.toggle('hidden', SoundFX.muted);
+      document.getElementById('soundOffIcon').classList.toggle('hidden', !SoundFX.muted);
+      if (SoundFX.muted) {
+        BGMPlayer.stop();
+      } else {
+        SoundFX.playClick();
+        BGMPlayer.start();
+      }
+      showToast(SoundFX.muted ? '🔇 모든 소리를 껐습니다.' : '🔊 소리와 배경음악을 켰습니다.');
+    });
+
+    document.getElementById('fullscreenBtn').addEventListener('click', () => {
+      SoundFX.playClick();
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen?.().catch(() => {
+          showToast('이 브라우저에서는 전체 화면을 지원하지 않아요.');
+        });
+      } else {
+        document.exitFullscreen?.().catch(() => {});
+      }
+    });
+
+    const openHelp = () => {
+      state.helpOpen = true;
+      document.getElementById('helpModal').classList.remove('hidden');
+    };
+    const closeHelp = () => {
+      state.helpOpen = false;
+      document.getElementById('helpModal').classList.add('hidden');
+    };
+    document.getElementById('helpBtn').addEventListener('click', openHelp);
+    document.getElementById('lobbyHelpBtn').addEventListener('click', openHelp);
+    document.getElementById('closeHelpBtn').addEventListener('click', closeHelp);
+    document.getElementById('confirmHelpBtn').addEventListener('click', closeHelp);
+
+    function returnToLobby() {
+      if (state.unsubRoom) { state.unsubRoom(); state.unsubRoom = null; }
+      if (RT.unsubRtRoom) { RT.unsubRtRoom(); RT.unsubRtRoom = null; }
+      state.gameType = 'turn';
+      RT.switchUI(false);
+      state.status = 'lobby';
+      state.bombTargeting = false;
+      state.remoteAnim = null;
+      state.bombAnim = null;
+      document.getElementById('bombTargetBanner').classList.add('hidden');
+      document.getElementById('resultModal').classList.add('hidden');
+      document.getElementById('rouletteModal').classList.add('hidden');
+      document.getElementById('waitingModal').classList.add('hidden');
+      document.getElementById('qrModal').classList.add('hidden');
+      document.getElementById('roomCodeBadge').classList.add('hidden');
+      document.getElementById('lobbyModal').classList.remove('hidden');
+    }
+    document.getElementById('lobbyBtn').addEventListener('click', returnToLobby);
+    document.getElementById('resultLobbyBtn').addEventListener('click', returnToLobby);
+
+    document.getElementById('rematchBtn').addEventListener('click', async () => {
+      document.getElementById('resultModal').classList.add('hidden');
+      if (state.gameType === 'realtime') {
+        const nick = document.getElementById('rtNicknameInput').value.trim() || '우리반 대표';
+        const total = RT.isComputerMode
+          ? (RT.isSpectator ? Math.max(2, RT.aiCount) : RT.aiCount + 1)
+          : RT.players.length;
+        RT.startRealtimeMatch(Math.floor(Math.random() * 9999999) + 1, nick, null, total, RT.isComputerMode, RT.isSpectator);
+        return;
+      }
+      if (state.mode === 'local') {
+        openLocalRoulette();
+      } else {
+        state.status = 'playing';
+        const newSeed = Math.floor(Math.random() * 9999999) + 1;
+        const nextFirst = state.firstPlayer === 1 ? 2 : 1;
+        startFreshMatchData(newSeed, nextFirst);
+        await pushOnlineState({
+          actionType: 'rematch',
+          from: { x: state.stone.x, y: state.stone.y },
+          to: { x: state.stone.x, y: state.stone.y },
+          winner: null, winReason: '', message: '새 지형으로 게임이 시작되었습니다!'
+        });
+        SoundFX.playCapture();
+      }
+    });
+
+    // =========================================================================
+    // 16. 앱 시작 (안전한 초기화)
+    // =========================================================================
+    // 16. 앱 시작 (안전한 초기화 - 외부 리소스 대기 없이 DOM 준비 즉시 실행)
+    // =========================================================================
+    let appInitialized = false;
+    async function initApp() {
+      if (appInitialized) return;
+      appInitialized = true;
+      try {
+        renderLobbyAvatarPickers();
+        renderRtAvatarPicker();
+        updateAiConfigUI();
+        startFreshMatchData(Math.floor(Math.random() * 9999999) + 1, 1);
+        BGMPlayer.updateLabel();
+        resizeCanvas();
+        requestAnimationFrame(gameLoop);
+      } catch (err) {
+        console.error('게임 초기화 오류:', err);
+      }
+
+      await initFirebase();
+
+      // URL 쿼리(?room=1234&mode=realtime)로 QR 접속 시 자동 세팅
+      const params = new URLSearchParams(window.location.search);
+      const qRoom = params.get('room');
+      const qMode = params.get('mode');
+      if (qRoom && /^\d{4}$/.test(qRoom)) {
+        const banner = document.getElementById('qrJoinBanner');
+        const bannerText = document.getElementById('qrJoinBannerText');
+        banner.classList.remove('hidden');
+        if (qMode === 'realtime') {
+          setLobbyModeTab('realtime');
+          document.getElementById('joinRtCodeInput').value = qRoom;
+          bannerText.textContent = `📱 QR 코드로 실시간 방 [${qRoom}]에 연결됐어요! 별명을 쓰고 [실시간 참여]를 누르세요.`;
+        } else {
+          setLobbyModeTab('turn');
+          document.getElementById('joinCodeInput').value = qRoom;
+          bannerText.textContent = `📱 QR 코드로 턴제 방 [${qRoom}]에 연결됐어요! 별명을 쓰고 [방 참여]를 누르세요.`;
+        }
+      }
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initApp);
+    } else {
+      initApp();
+    }
+  </script>
+</body>
+</html>
