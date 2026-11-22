@@ -237,6 +237,9 @@
           <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
           <span>상대방 차례 진행 중...</span>
         </div>
+        <div id="netBanner" class="hidden absolute top-2.5 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-amber-400 text-amber-950 text-xs sm:text-sm font-black shadow-lg border-2 border-white pointer-events-none z-20 whitespace-nowrap">
+          📡 선생님 기기와 연결이 잠시 끊겼어요 · 선생님 화면이 켜져 있는지 확인해 주세요
+        </div>
       </div>
     </div>
 
@@ -573,7 +576,7 @@
           <div class="text-2xl flex-shrink-0">⚡</div>
           <div>
             <div class="font-bold text-indigo-900">6. 실시간 배틀 모드 (최대 30명)</div>
-            <p class="text-slate-600">턴 대기 없이 모두가 동시에 말을 튕깁니다! 인원수에 따라 운동장이 넓어지고, 내 화면은 <b>내 땅 중심으로 적당히 확대</b>되어 보입니다. 사이드 패널의 <b>전체 미니맵</b>으로 점령 현황을 확인하며, <b>먼저 땅을 차지해 상대의 이동 선을 덮으면 상대의 선이 사라집니다!</b> 아이템과 보급상자도 아래 미니 독에서 똑같이 쓸 수 있어요.</p>
+            <p class="text-slate-600">턴 대기 없이 모두가 동시에 말을 튕깁니다! 인원수에 따라 운동장이 넓어지고, 내 화면은 <b>내 땅 중심으로 적당히 확대</b>되어 보입니다. 사이드 패널의 <b>전체 미니맵</b>으로 점령 현황을 확인하며, <b>먼저 땅을 차지해 상대의 이동 선을 덮으면 상대의 선이 사라집니다!</b> 아이템과 보급상자도 아래 미니 독에서 똑같이 쓸 수 있어요. 학급 QR 방에서는 <b>선생님 기기가 경기를 진행</b>하니, 경기 중에는 선생님 화면을 켜 두세요.</p>
           </div>
         </div>
       </div>
@@ -608,13 +611,37 @@
   </div>
 
   <script>
-    const MANUAL_FIREBASE_CONFIG = null;
+    // 온라인 대전을 쓰려면 Firebase 콘솔의 웹 앱 설정값을 넣으세요 (README 참고).
+    // databaseURL은 실시간 학급 방(Realtime Database)에 꼭 필요합니다.
+    const MANUAL_FIREBASE_CONFIG = {
+      apiKey: "AIzaSyBFzqdTjXn9GwOvnSbWUcCnzYFogCkC91c",
+      authDomain: "ttangttameokgi-d01e0.firebaseapp.com",
+      databaseURL: "https://ttangttameokgi-d01e0-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "ttangttameokgi-d01e0",
+      storageBucket: "ttangttameokgi-d01e0.firebasestorage.app",
+      messagingSenderId: "184106709163",
+      appId: "1:184106709163:web:71f3f2d3c079b363b1c7ee"
+    };
+    /* 예시:
+    const MANUAL_FIREBASE_CONFIG = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT.firebaseapp.com",
+      databaseURL: "https://YOUR_PROJECT-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT.appspot.com",
+      messagingSenderId: "YOUR_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+    */
 
     let db = null;
     let auth = null;
     let fbFirestore = null;
     let currentUser = null;
     let firebaseReady = false;
+    let rtdb = null;
+    let rtdbMod = null;
+    let rtdbReady = false;
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'playground-land-grab-v2';
 
     async function initFirebase() {
@@ -641,6 +668,15 @@
           currentUser = cred.user;
         }
         firebaseReady = true;
+        if (firebaseConfig.databaseURL) {
+          try {
+            rtdbMod = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js");
+            rtdb = rtdbMod.getDatabase(app);
+            rtdbReady = true;
+          } catch (err) {
+            console.warn('Realtime Database 연결 생략:', err);
+          }
+        }
       } catch (err) {
         console.warn("Firebase 연결 생략 (로컬 모드 정상 작동):", err);
         firebaseReady = false;
@@ -1895,11 +1931,27 @@
         showToast('온라인 서버 연결을 확인할 수 없어요. 로컬 모드를 이용해 주세요!');
         return;
       }
-      let code = '';
-      for (let i = 0; i < 5; i++) {
-        code = String(Math.floor(1000 + Math.random() * 9000));
-        const snap = await fbFirestore.getDoc(getRoomRef(code));
-        if (!snap.exists()) break;
+      let code = null;
+      for (let i = 0; i < 25 && !code; i++) {
+        const c = String(Math.floor(1000 + Math.random() * 9000));
+        try {
+          const ok = await fbFirestore.runTransaction(db, async (tx) => {
+            const snap = await tx.get(getRoomRef(c));
+            if (snap.exists()) {
+              const d = snap.data();
+              if (d.status !== 'closed' && (d.createdAt || 0) > Date.now() - RT_STALE_MS) return false;
+            }
+            tx.set(getRoomRef(c), { roomCode: c, status: 'reserving', createdAt: Date.now(), p1Uid: currentUser.uid });
+            return true;
+          });
+          if (ok) code = c;
+        } catch (err) {
+          console.warn('방 코드 확보 실패:', err);
+        }
+      }
+      if (!code) {
+        showToast('방을 만들지 못했어요. 인터넷 연결과 Firebase 설정을 확인해 주세요.');
+        return;
       }
       const nick = document.getElementById('p1NicknameInput').value.trim() || '파랑팀';
       state.mode = 'online';
@@ -1912,7 +1964,7 @@
       const randomFirst = Math.random() < 0.5 ? 1 : 2;
       startFreshMatchData(newSeed, randomFirst);
       const initialData = {
-        roomCode: code, status: 'waiting', seed: state.seed, firstPlayer: state.firstPlayer,
+        roomCode: code, status: 'waiting', createdAt: Date.now(), seed: state.seed, firstPlayer: state.firstPlayer,
         maxRounds: state.maxRounds, currentRound: 1, turnCount: 0, currentTurn: state.firstPlayer,
         maxFlicksThisTurn: 3, flicksLeft: 3, hasLeftTerritory: false,
         p1Uid: currentUser.uid, p1Name: state.p1Name, p1Avatar: state.p1Avatar,
@@ -1950,6 +2002,10 @@
         const snap = await fbFirestore.getDoc(ref);
         if (!snap.exists()) { showToast('존재하지 않는 방 코드입니다.'); return; }
         const data = snap.data();
+        if (data.status === 'closed' || data.status === 'reserving' || (data.createdAt || 0) < Date.now() - RT_STALE_MS) {
+          showToast('없는 방이거나 이미 끝난 방이에요. 방 코드를 확인해 주세요.');
+          return;
+        }
         if (data.status !== 'waiting' && data.p2Uid !== currentUser.uid && data.p1Uid !== currentUser.uid) {
           showToast('이미 게임이 진행 중인 방입니다.');
           return;
@@ -2010,6 +2066,11 @@
       state.unsubRoom = fbFirestore.onSnapshot(getRoomRef(code), (snap) => {
         if (!snap.exists()) return;
         const data = snap.data();
+        if (data.status === 'closed') {
+          showToast('상대가 방을 나갔어요. 로비로 돌아갑니다.');
+          returnToLobby();
+          return;
+        }
         state.p1Name = data.p1Name || '파랑팀';
         state.p2Name = data.p2Name || '빨강팀';
         if (data.p1Avatar) state.p1Avatar = data.p1Avatar;
@@ -3396,6 +3457,9 @@
       document.getElementById('resP2Score').textContent = `${state.p2Percent.toFixed(1)}%`;
       document.getElementById('resP1Avatar').innerHTML = renderAvatarSVG(state.p1Avatar, winner === 1 ? 'happy' : winner === 2 ? 'sad' : 'normal', 1);
       document.getElementById('resP2Avatar').innerHTML = renderAvatarSVG(state.p2Avatar, winner === 2 ? 'happy' : winner === 1 ? 'sad' : 'normal', 2);
+      const rb = document.getElementById('rematchBtn');
+      rb.disabled = false;
+      rb.textContent = '🔄 새 지형으로 다시 하기';
       document.getElementById('turnResultCards').classList.remove('hidden');
       document.getElementById('rtResultList').classList.add('hidden');
       updateAvatarsUI(true);
@@ -3436,6 +3500,47 @@
       document.getElementById('qrModal').classList.remove('hidden');
     }
 
+    // =========================================================================
+    // 14-E. 실시간 온라인 공통 도구
+    //   구조: 선생님 기기(호스트)가 경기 전체를 계산하고, 학생 기기는 입력만 보냄
+    //   - frame : 호스트가 0.2초마다 돌 위치·상태를 전송 (바뀐 학생만 담아 데이터 절약)
+    //   - ops   : 땅 점령·폭탄·바리케이드 같은 지형 변화를 순서대로 기록 (모든 기기가 똑같이 재생)
+    //   - inputs: 학생 기기가 보낸 튕기기·아이템 사용 요청
+    // =========================================================================
+    const RT_STALE_MS = 3 * 60 * 60 * 1000;   // 3시간 지난 방 코드는 재사용 가능
+    const RT_FRAME_SEC = 0.2;
+
+    function r1(v) { return Math.round(v * 10) / 10; }
+    function r2(v) { return Math.round(v * 100) / 100; }
+    function toArray(v) {
+      if (Array.isArray(v)) return v;
+      if (v && typeof v === 'object') return Object.keys(v).sort((a, b) => a - b).map(k => v[k]);
+      return [];
+    }
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+    function rtRef(path) { return rtdbMod.ref(rtdb, path); }
+    function sortRoomPlayers(obj) {
+      return Object.entries(obj || {})
+        .map(([uid, v]) => ({ uid, name: String((v && v.name) || '학생').slice(0, 8), avatar: (v && v.avatar) || 'dog', joinedAt: (v && v.joinedAt) || 0 }))
+        .sort((a, b) => a.joinedAt - b.joinedAt);
+    }
+    function setNetBanner(show) {
+      const el = document.getElementById('netBanner');
+      if (el) el.classList.toggle('hidden', !show);
+    }
+    let wakeLockHandle = null;
+    async function requestWakeLock() {
+      try { if (navigator.wakeLock) wakeLockHandle = await navigator.wakeLock.request('screen'); } catch (_) {}
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && typeof RT !== 'undefined' && RT.net && RT.net.role === 'host') requestWakeLock();
+    });
+
+    // =========================================================================
+    // 14-D. 실시간 배틀로얄 엔진 (최대 30인, 동적 맵 크기, 확대 카메라, 미니맵, 온라인 동기화)
+    // =========================================================================
     const RT_PALETTE = (() => {
       const list = [{ r: 0, g: 0, b: 0, hex: '#000000' }];
       for (let i = 0; i < 30; i++) {
@@ -3481,9 +3586,12 @@
       activePointers: new Map(),
       pinch: { active: false, startDist: 0, startZoom: 1.0 },
       minimapDragging: false, hudSyncAccum: 0,
-      unsubRtRoom: null, rtRoomCode: null, rtRoomPlayers: [], rtIsHost: false, rtHostAsSpectator: true,
       mapItems: [], crates: [], nextItemId: 1, nextCrateId: 1, itemTimer: 0, crateTimer: 0,
       targeting: null, effects: [], _lbKey: '',
+      lobby: null,        // 대기실 { code, isHost, asSpectator, offline, nick, players, unsubs }
+      net: null,          // 경기 중 네트워크 { role: 'host' | 'client', code, gameId, ... }
+      pred: null,         // 학생 기기: 내 돌 즉시 반응용 예측 이동
+      hostOnline: true,
 
       getMapDims(playerCount) {
         const n = Math.max(2, Math.min(30, playerCount));
@@ -3513,6 +3621,7 @@
         }
         document.getElementById('bombTargetBanner').classList.add('hidden');
         document.getElementById('waitTurnBanner').classList.add('hidden');
+        if (!isRealtime) setNetBanner(false);
         requestAnimationFrame(() => resizeCanvas());
       },
 
@@ -3541,6 +3650,7 @@
 
       initWorld(playerCount, durationSec, seed, humanName, onlinePlayers = null, isComputerMode = true, isSpectator = false) {
         const clampedCount = Math.max(2, Math.min(30, playerCount));
+        const isClient = !!(this.net && this.net.role === 'client');
         this.seed = seed;
         this.timeLeft = durationSec;
         this.isComputerMode = isComputerMode;
@@ -3560,7 +3670,7 @@
         this.mapItems = []; this.crates = []; this.effects = [];
         this.nextItemId = 1; this.nextCrateId = 1;
         this.itemTimer = 4; this.crateTimer = 20;
-        this.targeting = null; this._lbKey = '';
+        this.targeting = null; this._lbKey = ''; this.pred = null; this.hostOnline = true;
         this.territoryCanvas.width = this.gridW;
         this.territoryCanvas.height = this.gridH;
         this.territoryImgData = this.territoryCanvas.getContext('2d').createImageData(this.gridW, this.gridH);
@@ -3568,39 +3678,38 @@
         this.minimapCtx = this.minimapCanvas.getContext('2d');
         this.buildTerrain(seed);
 
+        // 같은 seed·같은 참가자 순서면 모든 기기에서 똑같은 시작 지도가 만들어짐
         const rng = createRNG(seed ^ 0x2468ACE0);
         const approxPerimeter = 2 * (this.gridW + this.gridH - 40);
-        const slotSpacing = approxPerimeter / clampedCount;
-        const initR = Math.max(10, Math.min(18, slotSpacing * 0.34));
+        const initR = Math.max(10, Math.min(18, (approxPerimeter / clampedCount) * 0.34));
         const spawns = this.generateOuterPerimeterSpawns(clampedCount, initR, rng);
 
         this.players = [];
         const myUid = currentUser?.uid || 'local_me';
-        this.myId = isSpectator ? 0 : 1;
-
+        this.myId = 0;
         for (let i = 0; i < clampedCount; i++) {
           const id = i + 1;
           const { x: hx, y: hy } = spawns[i];
           const onlineP = onlinePlayers && onlinePlayers[i] ? onlinePlayers[i] : null;
-          const isMe = !isSpectator && (onlinePlayers ? (onlineP && onlineP.uid === myUid) : (i === 0));
+          const isMe = !isSpectator && (onlinePlayers ? !!(onlineP && onlineP.uid === myUid) : i === 0);
           if (isMe) this.myId = id;
           const botIdx = isSpectator ? i : Math.max(0, i - 1);
-          const name = onlineP ? onlineP.name : isMe ? (humanName || '나') : `AI ${AI_BOT_NAMES[botIdx % AI_BOT_NAMES.length]}`;
-          const avatar = onlineP ? onlineP.avatar : isMe ? this.myAvatar : AVATAR_CATALOG[i % AVATAR_CATALOG.length].id;
+          const name = onlineP ? String(onlineP.name || '학생').slice(0, 8)
+            : isMe ? (humanName || '나') : `AI ${AI_BOT_NAMES[botIdx % AI_BOT_NAMES.length]}`;
+          const avatar = onlineP ? (onlineP.avatar || 'dog') : isMe ? this.myAvatar : AVATAR_CATALOG[i % AVATAR_CATALOG.length].id;
           this.players.push({
             id, uid: onlineP ? onlineP.uid : (isMe ? myUid : `bot_${id}`),
             name, avatar, color: RT_PALETTE[id],
             isHuman: isMe || !!onlineP, isBot: !isMe && !onlineP,
             homeX: hx, homeY: hy, x: hx, y: hy, vx: 0, vy: 0, moving: false,
-            flicksLeft: 3, hasLeft: false, path: [{ x: hx, y: hy }],
+            flicksLeft: 3, maxFlicks: 3, hasLeft: false, path: [{ x: hx, y: hy }],
             cells: 0, percent: 0, respawnTimer: 0, aiCooldown: 0.5 + rng() * 1.1,
-            maxFlicks: 3, nextBonus: false, slideT: 0, inv: makeInv(), buffs: makeRtBuffs()
+            nextBonus: false, slideT: 0, act: 0, inv: makeInv(), buffs: makeRtBuffs(),
+            offX: 0, offY: 0, sim: null, netMoving: false
           });
           const rSq = initR * initR;
-          const minX = Math.max(0, Math.floor(hx - initR)), maxX = Math.min(this.gridW - 1, Math.ceil(hx + initR));
-          const minY = Math.max(0, Math.floor(hy - initR)), maxY = Math.min(this.gridH - 1, Math.ceil(hy + initR));
-          for (let y = minY; y <= maxY; y++) {
-            for (let x = minX; x <= maxX; x++) {
+          for (let y = Math.max(0, Math.floor(hy - initR)); y <= Math.min(this.gridH - 1, Math.ceil(hy + initR)); y++) {
+            for (let x = Math.max(0, Math.floor(hx - initR)); x <= Math.min(this.gridW - 1, Math.ceil(hx + initR)); x++) {
               if ((x - hx) ** 2 + (y - hy) ** 2 <= rSq) this.grid[y * this.gridW + x] = id;
             }
           }
@@ -3621,10 +3730,13 @@
 
         this.recalcAllPercents();
         this.renderTerritoryCanvas();
-        const initItems = 2 + Math.ceil(clampedCount / 4);
-        for (let i = 0; i < initItems; i++) this.spawnMapItem();
+        if (!isClient) {
+          const initItems = 2 + Math.ceil(clampedCount / 4);
+          for (let i = 0; i < initItems; i++) this.spawnMapItem();
+        }
 
         const me = this.getMe();
+        const dock = document.getElementById('rtItemDock');
         if (this.isSpectator || !me) {
           this.cam.x = this.gridW * 0.5; this.cam.y = this.gridH * 0.5;
           document.getElementById('rtMyNameHud').textContent = '선생님 관전';
@@ -3634,25 +3746,23 @@
           document.getElementById('rtMyPercentHud').textContent = '플레이어 제외';
           document.getElementById('rtFlickDots').innerHTML = '';
           document.getElementById('rtRecenterBtn').classList.add('hidden');
-          document.getElementById('rtItemDock').classList.add('hidden');
-          document.getElementById('rtItemDock').classList.remove('flex');
+          dock.classList.add('hidden'); dock.classList.remove('flex');
         } else {
           this.cam.x = me.homeX; this.cam.y = me.homeY;
           document.getElementById('rtMyNameHud').textContent = me.name;
           document.getElementById('rtMyAvatarHud').innerHTML = renderAvatarSVG(me.avatar, 'happy', 1);
           document.getElementById('rtMyAvatarHud').style.borderColor = me.color.hex;
           document.getElementById('rtRecenterBtn').classList.remove('hidden');
-          document.getElementById('rtItemDock').classList.remove('hidden');
-          document.getElementById('rtItemDock').classList.add('flex');
+          dock.classList.remove('hidden'); dock.classList.add('flex');
         }
         document.getElementById('rtPlayerCountHud').textContent = isComputerMode
           ? `🤖 ${clampedCount}명 (AI ${this.getDifficultyLabel()})`
-          : `👥 ${clampedCount}명 실시간 대전`;
+          : this.net ? `👥 ${clampedCount}명 온라인 대전` : `👥 ${clampedCount}명 실시간 대전`;
         document.getElementById('rtMapSizeHud').textContent = `맵 ${this.gridW}×${this.gridH}`;
         document.getElementById('rtAliveBadge').textContent = `${clampedCount}명`;
         document.getElementById('statusIcon').textContent = this.isSpectator ? '👁️' : (isComputerMode ? '🤖' : '⚡');
         document.getElementById('statusText').textContent = this.isSpectator
-          ? '선생님 관전 모드 · 두 손가락/휠로 확대·축소, 화면·미니맵 드래그 및 순위표 클릭으로 학생 관전!'
+          ? '관전 모드 · 두 손가락/휠로 확대·축소, 화면·미니맵 드래그 및 순위표 클릭으로 학생 관전!'
           : '실시간 배틀 · 두 손가락/휠로 확대·축소, 빈 화면·미니맵 드래그로 전장 관전, 🎯 내 위치로 복귀!';
         this.updateHUD();
         this.drawMinimap();
@@ -3741,11 +3851,263 @@
         };
       },
 
+      byId(id) { return this.players.find(p => p.id === id) || null; },
+
+      getMe() {
+        if (this.isSpectator || this.myId <= 0) return null;
+        return this.byId(this.myId);
+      },
+
       isVisible(x, y) {
         const vw = this.gridW / this.cam.zoom, vh = this.gridH / this.cam.zoom;
         return Math.abs(x - this.cam.x) < vw * 0.6 && Math.abs(y - this.cam.y) < vh * 0.6;
       },
 
+      // ---------------------------------------------------------------------
+      // 이벤트: 호스트/오프라인에서 발생 → 내 화면 효과 + (호스트면) 학생 기기로 전달
+      // ---------------------------------------------------------------------
+      fire(kind, d) {
+        this.fx(kind, d);
+        const n = this.net;
+        if (n && n.role === 'host') {
+          n.events.push([++n.eid, kind, d]);
+          if (n.events.length > 40) n.events.shift();
+        }
+      },
+
+      reject(p, m) {
+        if (p && p.isHuman) this.fire('rej', { p: p.id, m });
+      },
+
+      fx(kind, d) {
+        const pid = typeof d.p === 'number' ? d.p : -1;
+        const mine = pid > 0 && pid === this.myId;
+        const p = pid > 0 ? this.byId(pid) : null;
+        switch (kind) {
+          case 'cap':
+            if (mine && p) {
+              SoundFX.playCapture();
+              this.floatingTexts.push({ x: d.x, y: d.y, text: `+${d.pct}% 획득!`, color: p.color.hex, life: 1.0 });
+              showToast(d.c ? `🎉 +${d.pct}% 획득! 먼저 차지해서 ${d.c}님 등의 선을 지웠어요!` : `🎉 땅을 +${d.pct}% 넓혔어요!`);
+            }
+            break;
+          case 'resp':
+            if (mine) { SoundFX.playFail(); if (d.r) showToast(d.r); }
+            break;
+          case 'enemy':
+            if (mine) this.floatingTexts.push(d.i
+              ? { x: d.x, y: d.y, text: '🧊 미끄럽게 통과!', color: '#0891b2', life: 0.9 }
+              : { x: d.x, y: d.y, text: '🐢 상대 땅 감속!', color: '#7c3aed', life: 0.9 });
+            break;
+          case 'pick': {
+            const meta = ITEM_META[d.t];
+            if (!meta) break;
+            if (d.c) this.effects.push({ type: 'ring', x: d.x, y: d.y, r: 2, maxR: 10, color: meta.color, life: 1 });
+            if (mine) {
+              SoundFX.playPickup();
+              this.floatingTexts.push({ x: d.x, y: d.y - 3, text: `${d.c ? '📦 ' : ''}${meta.icon} ${meta.name}!`, color: meta.color, life: 1.0 });
+              showToast(d.c
+                ? `📦 보급상자 오픈! [${meta.icon} ${meta.name}] 획득 → 아래 칸을 눌러 사용하세요`
+                : `${meta.icon} [${meta.name}] 아이템을 획득했어요!`);
+              markDockNew(d.t);
+            } else if (d.c && p && this.isVisible(d.x, d.y)) {
+              this.floatingTexts.push({ x: d.x, y: d.y - 3, text: `${p.name} ${meta.icon}`, color: '#334155', life: 0.9 });
+            }
+            break;
+          }
+          case 'encl':
+            if (mine) {
+              SoundFX.playPickup();
+              setTimeout(() => showToast(`🧲 감싼 땅 안의 아이템 ${d.ic} 이(가) 쏙 들어왔어요!`), 900);
+            }
+            break;
+          case 'bonus':
+            if (mine) showToast('🪨 +1 튕기기 발동! 이번 출격은 4번!');
+            break;
+          case 'shield':
+            this.effects.push({ type: 'ring', x: d.x, y: d.y, r: 2, maxR: 11, color: '#0ea5e9', life: 1 });
+            if (mine) { SoundFX.playShield(); showToast('🛡️ 안전 가드 발동! 경계에서 튕겨 돌아왔어요'); }
+            break;
+          case 'drop':
+            SoundFX.playCrateDrop();
+            showToast(`🪂 보급상자 ${d.n}개 낙하! 먼저 건드리는 사람이 가져가요!`);
+            break;
+          case 'land':
+            if (this.isVisible(d.x, d.y)) SoundFX.playThud();
+            this.effects.push({ type: 'ring', x: d.x, y: d.y + 1.5, r: 2, maxR: 8, color: '#a8906e', life: 1 });
+            break;
+          case 'bomb': {
+            this.effects.push({ type: 'blast', x: d.x, y: d.y, r: 3, maxR: BOMB_RADIUS * 1.3, color: '#f97316', life: 1 });
+            this.floatingTexts.push({ x: d.x, y: d.y, text: '💥 쾅!', color: '#ef4444', life: 1.0 });
+            if (mine || this.isVisible(d.x, d.y)) SoundFX.playExplosion();
+            const me = this.getMe();
+            if (mine) showToast('💣 폭탄 명중! 주변 땅이 주인 없는 땅이 되었어요!');
+            else if (me && p && Math.hypot(me.homeX - d.x, me.homeY - d.y) < BOMB_RADIUS * 1.8) showToast(`💣 ${p.name}님의 폭탄이 내 땅 근처에 떨어졌어요!`);
+            break;
+          }
+          case 'bar':
+            this.effects.push({ type: 'ring', x: d.x, y: d.y, r: 2, maxR: 10, color: '#f97316', life: 1 });
+            if (mine || this.isVisible(d.x, d.y)) SoundFX.playClack('rock', 0.9);
+            if (mine) this.floatingTexts.push({ x: d.x, y: d.y - 4, text: '🚧 바리케이드 설치!', color: '#ea580c', life: 1.0 });
+            break;
+          case 'use': {
+            const meta = ITEM_META[d.t];
+            if (!mine || !meta) break;
+            SoundFX.playPickup();
+            showToast(d.t === 'power' ? '⚡ 파워 업 장착! 다음 튕기기 1.55배!'
+              : d.t === 'extraFlick' ? '🪨 다음 출격 튕기기 +1 예약! (4번)'
+              : `${meta.icon} ${meta.name} 발동! 내 땅으로 돌아올 때까지 ${meta.desc}`);
+            break;
+          }
+          case 'rej':
+            if (mine && d.m) showToast(d.m);
+            break;
+        }
+        if (mine) this.updateDock();
+      },
+
+      // ---------------------------------------------------------------------
+      // 지형 변화(op): 모든 기기가 같은 순서로 똑같이 실행 → 땅 모양이 항상 일치
+      // ---------------------------------------------------------------------
+      applyOp(op) {
+        if (!op || !op.k) return null;
+        if (op.k === 'bar') {
+          this.obstacles.push({ type: 'barricade', x: op.x, y: op.y, hw: BARRICADE_HW, hh: BARRICADE_HH, angle: op.a, bornAt: performance.now() });
+          return null;
+        }
+        let result = null;
+        const W = this.gridW, H = this.gridH;
+        if (op.k === 'cap') {
+          result = this.gridCapture(op.p, toArray(op.path));
+        } else if (op.k === 'bomb' || op.k === 'base') {
+          const R = op.k === 'bomb' ? BOMB_RADIUS : (op.r || 8);
+          const val = op.k === 'bomb' ? 0 : op.p;
+          const rSq = R * R;
+          for (let y = Math.max(0, Math.floor(op.y - R)); y <= Math.min(H - 1, Math.ceil(op.y + R)); y++) {
+            for (let x = Math.max(0, Math.floor(op.x - R)); x <= Math.min(W - 1, Math.ceil(op.x + R)); x++) {
+              if ((x - op.x) ** 2 + (y - op.y) ** 2 <= rSq) this.grid[y * W + x] = val;
+            }
+          }
+        }
+        this.recalcAllPercents();
+        this.renderTerritoryCanvas();
+        this.drawMinimap();
+        return result;
+      },
+
+      commitOp(op) {
+        const res = this.applyOp(op);
+        const n = this.net;
+        if (n && n.role === 'host') {
+          op.q = ++n.opSeq;   // 순서 번호: 학생 기기는 이 번호 순서대로만 적용
+          rtdbMod.push(rtRef(n.base + '/ops'), op).then(null, (err) => console.warn('op 전송 실패', err));
+        }
+        return res;
+      },
+
+      gridCapture(pid, flat) {
+        const w = this.gridW, h = this.gridH, tot = this.totalCells;
+        const wall = new Uint8Array(tot);
+        const pathMask = new Uint8Array(tot);
+        const capturedMask = new Uint8Array(tot);
+        for (let i = 0; i < tot; i++) if (this.grid[i] === pid) wall[i] = 1;
+        for (let i = 0; i + 3 < flat.length; i += 2) {
+          this.drawLineOnMask(wall, flat[i], flat[i + 1], flat[i + 2], flat[i + 3], 1);
+          this.drawLineOnMask(pathMask, flat[i], flat[i + 1], flat[i + 2], flat[i + 3], 1);
+        }
+        const visited = new Uint8Array(tot);
+        const queue = new Int32Array(tot);
+        const comps = [];
+        for (let start = 0; start < tot; start++) {
+          if (wall[start] === 1 || visited[start] === 1) continue;
+          let head = 0, tail = 0;
+          queue[tail++] = start; visited[start] = 1;
+          while (head < tail) {
+            const curr = queue[head++];
+            const cx = curr % w, cy = (curr - cx) / w;
+            if (cx > 0 && wall[curr - 1] === 0 && visited[curr - 1] === 0) { visited[curr - 1] = 1; queue[tail++] = curr - 1; }
+            if (cx < w - 1 && wall[curr + 1] === 0 && visited[curr + 1] === 0) { visited[curr + 1] = 1; queue[tail++] = curr + 1; }
+            if (cy > 0 && wall[curr - w] === 0 && visited[curr - w] === 0) { visited[curr - w] = 1; queue[tail++] = curr - w; }
+            if (cy < h - 1 && wall[curr + w] === 0 && visited[curr + w] === 0) { visited[curr + w] = 1; queue[tail++] = curr + w; }
+          }
+          comps.push({ cells: queue.slice(0, tail), size: tail });
+        }
+        let gained = 0;
+        if (comps.length > 1) {
+          let maxIdx = 0;
+          for (let i = 1; i < comps.length; i++) if (comps[i].size > comps[maxIdx].size) maxIdx = i;
+          for (let i = 0; i < comps.length; i++) {
+            if (i === maxIdx) continue;
+            for (const idx of comps[i].cells) {
+              if (this.grid[idx] !== pid) { this.grid[idx] = pid; capturedMask[idx] = 1; gained++; }
+            }
+          }
+        }
+        for (let i = 0; i < tot; i++) {
+          if (pathMask[i] === 1 && this.grid[i] !== pid) { this.grid[i] = pid; capturedMask[i] = 1; gained++; }
+        }
+        return { gained, capturedMask };
+      },
+
+      captureForPlayer(p) {
+        const flat = [];
+        for (const pt of p.path) flat.push(r2(pt.x), r2(pt.y));
+        const res = this.commitOp({ k: 'cap', p: p.id, path: flat });
+        if (!res || res.gained <= 0) return 0;
+        const { gained, capturedMask } = res;
+        const w = this.gridW, h = this.gridH;
+        const cancelled = [];
+        // 먼저 차지한 땅이 다른 참가자의 진행 중인 선(또는 말)을 덮으면 그 참가자는 본진으로
+        for (const other of this.players) {
+          if (other.id === p.id) continue;
+          if (!other.hasLeft && other.path.length <= 1 && !other.moving) continue;
+          const pts = other.moving ? [...other.path, { x: other.x, y: other.y }] : other.path;
+          let overlapped = false;
+          const ox = clampN(Math.round(other.x), 0, w - 1), oy = clampN(Math.round(other.y), 0, h - 1);
+          if (capturedMask[oy * w + ox] === 1) overlapped = true;
+          for (let k = 0; k < pts.length - 1 && !overlapped; k++) {
+            const ax = pts[k].x, ay = pts[k].y, bx = pts[k + 1].x, by = pts[k + 1].y;
+            const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay)));
+            for (let s = 0; s <= steps; s++) {
+              const t = s / steps;
+              const gx = clampN(Math.round(ax + (bx - ax) * t), 0, w - 1);
+              const gy = clampN(Math.round(ay + (by - ay) * t), 0, h - 1);
+              if (capturedMask[gy * w + gx] === 1) { overlapped = true; break; }
+            }
+          }
+          if (overlapped) {
+            cancelled.push(other.name);
+            this.respawnPlayer(other, `🚩 ${p.name}님이 먼저 땅을 차지해 내 선이 사라졌어요!`);
+          }
+        }
+        if (p.isHuman) {
+          this.fire('cap', { p: p.id, pct: ((gained / this.totalCells) * 100).toFixed(2), x: r1(p.x), y: r1(p.y), c: cancelled[0] || '' });
+        }
+        return gained;
+      },
+
+      respawnPlayer(p, reason = '') {
+        let found = false;
+        if (p.cells > 10) {
+          for (let tries = 0; tries < 60; tries++) {
+            const rx = Math.floor(Math.random() * this.gridW);
+            const ry = Math.floor(Math.random() * this.gridH);
+            if (this.grid[ry * this.gridW + rx] === p.id) { p.x = rx; p.y = ry; found = true; break; }
+          }
+        }
+        if (!found) {
+          p.x = p.homeX; p.y = p.homeY;
+          this.commitOp({ k: 'base', p: p.id, x: r2(p.homeX), y: r2(p.homeY), r: 8 });
+        }
+        p.vx = 0; p.vy = 0; p.moving = false;
+        this.startSortie(p);
+        p.respawnTimer = 0.9;
+        if (reason && p.isHuman) this.fire('resp', { p: p.id, r: reason });
+      },
+
+      // ---------------------------------------------------------------------
+      // 아이템 & 보급상자
+      // ---------------------------------------------------------------------
       isFreeSpot(x, y, pad = 6) {
         if (x < 14 || y < 14 || x > this.gridW - 14 || y > this.gridH - 14) return false;
         if (this.obstacles.some(o => obstacleContains(o, x, y, pad))) return false;
@@ -3779,26 +4141,12 @@
             break;
           }
         }
-        if (placed) {
-          SoundFX.playCrateDrop();
-          showToast(`🪂 보급상자 ${placed}개 낙하! 먼저 건드리는 사람이 가져가요!`);
-        }
+        if (placed) this.fire('drop', { n: placed });
       },
 
       grantItem(p, type, x, y, viaCrate) {
         p.inv[type]++;
-        const meta = ITEM_META[type];
-        if (p.id === this.myId) {
-          SoundFX.playPickup();
-          this.floatingTexts.push({ x, y: y - 3, text: `${viaCrate ? '📦 ' : ''}${meta.icon} ${meta.name}!`, color: meta.color, life: 1.0 });
-          showToast(viaCrate
-            ? `📦 보급상자 오픈! [${meta.icon} ${meta.name}] 획득 → 아래 칸을 눌러 사용하세요`
-            : `${meta.icon} [${meta.name}] 아이템을 획득했어요!`);
-          this.updateDock();
-          markDockNew(type);
-        } else if (viaCrate && this.isVisible(x, y)) {
-          this.floatingTexts.push({ x, y: y - 3, text: `${p.name} ${meta.icon}`, color: '#334155', life: 0.9 });
-        }
+        if (p.isHuman || viaCrate) this.fire('pick', { p: p.id, t: type, x: r1(x), y: r1(y), c: viaCrate ? 1 : 0 });
       },
 
       checkPickups(p) {
@@ -3815,7 +4163,6 @@
           const c = this.crates[i];
           if (c.fall >= 1 && Math.hypot(p.x - c.x, p.y - c.y) <= cr) {
             this.crates.splice(i, 1);
-            this.effects.push({ type: 'ring', x: c.x, y: c.y, r: 2, maxR: 10, color: ITEM_META[c.type].color, life: 1 });
             this.grantItem(p, c.type, c.x, c.y, true);
           }
         }
@@ -3830,19 +4177,14 @@
           this.mapItems.splice(i, 1);
           p.inv[it.type]++;
           got.push(ITEM_META[it.type].icon);
-          if (p.id === this.myId) this.floatingTexts.push({ x: it.x, y: it.y, text: `🧲 ${ITEM_META[it.type].icon} 쏙!`, color: ITEM_META[it.type].color, life: 1.0 });
         }
-        if (got.length && p.id === this.myId) {
-          SoundFX.playPickup();
-          setTimeout(() => showToast(`🧲 감싼 땅 안의 아이템 ${got.join(' ')} 이(가) 쏙 들어왔어요!`), 900);
-          this.updateDock();
-        }
+        if (got.length && p.isHuman) this.fire('encl', { p: p.id, ic: got.join(' ') });
       },
 
       // 한 번의 출격(내 땅을 떠나 돌아오기까지)이 끝나면 버프 해제, +1 예약 반영
       startSortie(p) {
         p.maxFlicks = p.nextBonus ? 4 : 3;
-        if (p.nextBonus && p.id === this.myId) showToast('🪨 +1 튕기기 발동! 이번 출격은 4번!');
+        if (p.nextBonus && p.isHuman) this.fire('bonus', { p: p.id });
         p.nextBonus = false;
         p.flicksLeft = p.maxFlicks;
         p.hasLeft = false;
@@ -3858,89 +4200,44 @@
         return true;
       },
 
-      useItem(type) {
-        const me = this.getMe();
-        if (!me || state.status !== 'playing') return;
-        const meta = ITEM_META[type];
-        if (type === 'bomb' || type === 'barricade') {
-          if (this.targeting === type) this.targeting = null;
-          else { if (me.inv[type] <= 0) return; this.targeting = type; }
-          SoundFX.playPlace();
-          updateTargetBanner();
-          this.updateDock();
-          return;
-        }
+      applyUse(p, type) {
+        if (!(type in ITEM_META) || type === 'bomb' || type === 'barricade') return false;
         if (type === 'extraFlick') {
-          if (me.nextBonus || me.inv.extraFlick <= 0) return;
-          me.inv.extraFlick--;
-          me.nextBonus = true;
-          SoundFX.playPickup();
-          showToast('🪨 다음 출격 튕기기 +1 예약! (4번)');
-          this.updateDock();
-          return;
+          if (p.nextBonus || p.inv.extraFlick <= 0) return false;
+          p.inv.extraFlick--;
+          p.nextBonus = true;
+          this.fire('use', { p: p.id, t: type });
+          return true;
         }
-        if (me.moving || me.respawnTimer > 0) { showToast('돌이 멈춘 뒤에 사용할 수 있어요!'); return; }
-        if (this.activateBuff(me, type)) {
-          SoundFX.playPickup();
-          showToast(type === 'power'
-            ? '⚡ 파워 업 장착! 다음 튕기기 1.55배!'
-            : `${meta.icon} ${meta.name} 발동! 내 땅으로 돌아올 때까지 ${meta.desc}`);
-          this.updateDock();
-          this.updateHUD();
-        }
-      },
-
-      handleTargetTap(pt) {
-        const me = this.getMe();
-        if (!me) { this.targeting = null; updateTargetBanner(); return; }
-        const ok = this.targeting === 'bomb' ? this.doBomb(me, pt.x, pt.y) : this.doBarricade(me, pt.x, pt.y);
-        if (ok) {
-          this.targeting = null;
-          updateTargetBanner();
-          this.updateDock();
-        }
+        if (p.moving || p.respawnTimer > 0) { this.reject(p, '돌이 멈춘 뒤에 사용할 수 있어요!'); return false; }
+        if (!this.activateBuff(p, type)) return false;
+        this.fire('use', { p: p.id, t: type });
+        return true;
       },
 
       doBomb(p, tx, ty) {
         if (p.inv.bomb <= 0) return false;
-        const cx = clampN(tx, 6, this.gridW - 6), cy = clampN(ty, 6, this.gridH - 6);
+        const cx = r2(clampN(tx, 6, this.gridW - 6)), cy = r2(clampN(ty, 6, this.gridH - 6));
         p.inv.bomb--;
-        const rSq = BOMB_RADIUS * BOMB_RADIUS;
-        const minX = Math.max(0, Math.floor(cx - BOMB_RADIUS)), maxX = Math.min(this.gridW - 1, Math.ceil(cx + BOMB_RADIUS));
-        const minY = Math.max(0, Math.floor(cy - BOMB_RADIUS)), maxY = Math.min(this.gridH - 1, Math.ceil(cy + BOMB_RADIUS));
-        for (let y = minY; y <= maxY; y++) {
-          for (let x = minX; x <= maxX; x++) {
-            if ((x - cx) ** 2 + (y - cy) ** 2 <= rSq) this.grid[y * this.gridW + x] = 0;
-          }
-        }
-        this.recalcAllPercents();
-        this.renderTerritoryCanvas();
-        this.drawMinimap();
-        this.effects.push({ type: 'blast', x: cx, y: cy, r: 3, maxR: BOMB_RADIUS * 1.3, color: '#f97316', life: 1 });
-        this.floatingTexts.push({ x: cx, y: cy, text: '💥 쾅!', color: '#ef4444', life: 1.0 });
-        const me = this.getMe();
-        if (p.id === this.myId || this.isVisible(cx, cy)) SoundFX.playExplosion();
-        if (p.id === this.myId) showToast('💣 폭탄 명중! 주변 땅이 주인 없는 땅이 되었어요!');
-        else if (me && Math.hypot(me.homeX - cx, me.homeY - cy) < BOMB_RADIUS * 1.8) showToast(`💣 ${p.name}님의 폭탄이 내 땅 근처에 떨어졌어요!`);
+        this.commitOp({ k: 'bomb', x: cx, y: cy });
+        this.fire('bomb', { p: p.id, x: r1(cx), y: r1(cy) });
         return true;
       },
 
       doBarricade(p, tx, ty) {
         if (p.inv.barricade <= 0) return false;
-        const isMe = p.id === this.myId;
-        const x = clampN(tx, 10, this.gridW - 10), y = clampN(ty, 10, this.gridH - 10);
+        const x = r2(clampN(tx, 10, this.gridW - 10)), y = r2(clampN(ty, 10, this.gridH - 10));
         const o = makeBarricade(x, y, p.x, p.y);
-        if (this.players.some(q => obstacleContains(o, q.x, q.y, STONE_RADIUS + 1.5))) { if (isMe) showToast('🚧 돌 바로 위에는 세울 수 없어요!'); return false; }
-        if (this.obstacles.some(ob => Math.hypot(ob.x - x, ob.y - y) < (ob.r || ob.hw) + BARRICADE_HW * 0.6)) { if (isMe) showToast('🚧 다른 장애물과 너무 가까워요!'); return false; }
+        o.angle = r2(o.angle);
+        if (this.players.some(q => obstacleContains(o, q.x, q.y, STONE_RADIUS + 1.5))) { this.reject(p, '🚧 돌 바로 위에는 세울 수 없어요!'); return false; }
+        if (this.obstacles.some(ob => Math.hypot(ob.x - x, ob.y - y) < (ob.r || ob.hw) + BARRICADE_HW * 0.6)) { this.reject(p, '🚧 다른 장애물과 너무 가까워요!'); return false; }
         if (this.crates.some(c => obstacleContains(o, c.x, c.y, 3)) || this.mapItems.some(it => obstacleContains(o, it.x, it.y, 3))) {
-          if (isMe) showToast('🚧 아이템이나 보급상자 위에는 세울 수 없어요!');
+          this.reject(p, '🚧 아이템이나 보급상자 위에는 세울 수 없어요!');
           return false;
         }
         p.inv.barricade--;
-        this.obstacles.push(o);
-        this.effects.push({ type: 'ring', x, y, r: 2, maxR: 10, color: '#f97316', life: 1 });
-        if (isMe || this.isVisible(x, y)) SoundFX.playClack('rock', 0.9);
-        if (isMe) this.floatingTexts.push({ x, y: y - 4, text: '🚧 바리케이드 설치!', color: '#ea580c', life: 1.0 });
+        this.commitOp({ k: 'bar', x, y, a: o.angle });
+        this.fire('bar', { p: p.id, x: r1(x), y: r1(y) });
         return true;
       },
 
@@ -3973,6 +4270,103 @@
         }
       },
 
+      // ---------------------------------------------------------------------
+      // 입력: 오프라인·호스트 본인은 바로 실행, 학생 기기는 호스트로 전송 + 내 화면 즉시 예측
+      // ---------------------------------------------------------------------
+      computeLaunch(p, dx, dy) {
+        const dist = Math.hypot(dx, dy);
+        if (!(dist >= MIN_PULL_DIST)) return null;
+        const clamped = Math.min(dist, MAX_PULL_DIST);
+        const enemyWeak = (this.isInsideEnemy(p.x, p.y, p.id) && !p.buffs.ice) ? ENEMY_TERRITORY_POWER_MULT : 1.0;
+        const boost = p.buffs.power ? POWER_UP_MULT : 1.0;
+        const speed = clamped * POWER_SCALE * enemyWeak * boost;
+        return { vx: (dx / dist) * speed, vy: (dy / dist) * speed, ratio: clamped / MAX_PULL_DIST, boost: !!p.buffs.power };
+      },
+
+      performInput(p, inp) {
+        if (!p || state.status !== 'playing' || !inp) return false;
+        const num = (v) => (typeof v === 'number' && isFinite(v)) ? v : 0;
+        switch (inp.k) {
+          case 'flick': {
+            if (p.moving || p.respawnTimer > 0 || p.flicksLeft <= 0) return false;
+            const L = this.computeLaunch(p, num(inp.dx), num(inp.dy));
+            if (!L) return false;
+            p.vx = L.vx; p.vy = L.vy;
+            p.moving = true; p.slideT = 0;
+            p.inEnemyLand = this.isInsideEnemy(p.x, p.y, p.id);
+            p.flicksLeft--;
+            p.act = (p.act || 0) + 1;
+            p.buffs.power = false;
+            if (p.id === this.myId) {
+              SoundFX.playFlick(L.ratio, L.boost);
+              this.cam.mode = 'follow';
+              this.updateDock();
+            }
+            return true;
+          }
+          case 'place': {
+            const x = num(inp.x), y = num(inp.y);
+            if (p.moving || p.flicksLeft !== p.maxFlicks || p.hasLeft) return false;
+            if (!this.isInside(x, y, p.id)) return false;
+            p.x = x; p.y = y;
+            p.path = [{ x, y }];
+            return true;
+          }
+          case 'use':
+            return this.applyUse(p, String(inp.t));
+          case 'target':
+            if (inp.t === 'bomb') return this.doBomb(p, num(inp.x), num(inp.y));
+            if (inp.t === 'barricade') return this.doBarricade(p, num(inp.x), num(inp.y));
+            return false;
+        }
+        return false;
+      },
+
+      dispatchInput(inp) {
+        const me = this.getMe();
+        if (!me) return false;
+        if (inp.k === 'place') SoundFX.playPlace();
+        if (this.net && this.net.role === 'client') {
+          this.netSendInput(inp);
+          this.predictInput(me, inp);
+          return true;
+        }
+        return this.performInput(me, inp);
+      },
+
+      predictInput(me, inp) {
+        if (inp.k === 'flick') {
+          const L = this.computeLaunch(me, inp.dx, inp.dy);
+          if (!L) return;
+          SoundFX.playFlick(L.ratio, L.boost);
+          this.pred = {
+            kind: 'flick', id: me.id, x: me.x, y: me.y, vx: L.vx, vy: L.vy,
+            buffs: { ...me.buffs, power: false }, inEnemyLand: this.isInsideEnemy(me.x, me.y, me.id),
+            slideT: 0, moving: true, age: 0, act0: me.act || 0, acked: false, hostMoving: false, hostPos: null
+          };
+          me.buffs.power = false;
+          this.cam.mode = 'follow';
+        } else if (inp.k === 'place') {
+          this.pred = { kind: 'place', id: me.id, x: inp.x, y: inp.y, vx: 0, vy: 0, buffs: { ...me.buffs }, moving: false, age: 0, acked: false, hostMoving: false, hostPos: null };
+        }
+        this.updateDock();
+      },
+
+      useItem(type) {
+        const me = this.getMe();
+        if (!me || state.status !== 'playing') return;
+        if (type === 'bomb' || type === 'barricade') {
+          if (this.targeting === type) this.targeting = null;
+          else { if (me.inv[type] <= 0) return; this.targeting = type; }
+          SoundFX.playPlace();
+          updateTargetBanner();
+          this.updateDock();
+          return;
+        }
+        if (type !== 'extraFlick' && (me.moving || me.respawnTimer > 0)) { showToast('돌이 멈춘 뒤에 사용할 수 있어요!'); return; }
+        this.dispatchInput({ k: 'use', t: type });
+      },
+
       updateDock() {
         const me = this.getMe();
         const inv = me ? me.inv : makeInv();
@@ -3991,11 +4385,9 @@
         });
       },
 
-      getMe() {
-        if (this.isSpectator || this.myId <= 0) return null;
-        return this.players.find(p => p.id === this.myId) || null;
-      },
-
+      // ---------------------------------------------------------------------
+      // 카메라
+      // ---------------------------------------------------------------------
       clampCamera() {
         this.cam.zoom = Math.max(this.cam.minZoom, Math.min(this.cam.maxZoom, this.cam.zoom));
         const halfW = (this.gridW / this.cam.zoom) * 0.5;
@@ -4107,113 +4499,48 @@
         }
       },
 
-      captureForPlayer(p) {
-        const w = this.gridW, h = this.gridH, tot = this.totalCells;
-        const wall = new Uint8Array(tot);
-        const pathMask = new Uint8Array(tot);
-        const capturedMask = new Uint8Array(tot);
-        for (let i = 0; i < tot; i++) if (this.grid[i] === p.id) wall[i] = 1;
-        for (let i = 0; i < p.path.length - 1; i++) {
-          this.drawLineOnMask(wall, p.path[i].x, p.path[i].y, p.path[i + 1].x, p.path[i + 1].y, 1);
-          this.drawLineOnMask(pathMask, p.path[i].x, p.path[i].y, p.path[i + 1].x, p.path[i + 1].y, 1);
-        }
-        const visited = new Uint8Array(tot);
-        const queue = new Int32Array(tot);
-        const comps = [];
-        for (let start = 0; start < tot; start++) {
-          if (wall[start] === 1 || visited[start] === 1) continue;
-          let head = 0, tail = 0;
-          queue[tail++] = start; visited[start] = 1;
-          while (head < tail) {
-            const curr = queue[head++];
-            const cx = curr % w, cy = (curr - cx) / w;
-            if (cx > 0 && wall[curr - 1] === 0 && visited[curr - 1] === 0) { visited[curr - 1] = 1; queue[tail++] = curr - 1; }
-            if (cx < w - 1 && wall[curr + 1] === 0 && visited[curr + 1] === 0) { visited[curr + 1] = 1; queue[tail++] = curr + 1; }
-            if (cy > 0 && wall[curr - w] === 0 && visited[curr - w] === 0) { visited[curr - w] = 1; queue[tail++] = curr - w; }
-            if (cy < h - 1 && wall[curr + w] === 0 && visited[curr + w] === 0) { visited[curr + w] = 1; queue[tail++] = curr + w; }
+      // ---------------------------------------------------------------------
+      // 돌 물리 (호스트·오프라인 실제 계산 / 학생 기기 예측·보간 공용)
+      // ---------------------------------------------------------------------
+      simulateBody(b, dt, emit) {
+        b.slideT = (b.slideT || 0) + dt;
+        const subSteps = 2;
+        const subFactor = (dt * 60) / subSteps;
+        const buffs = b.buffs || {};
+        let oob = false;
+        for (let s = 0; s < subSteps; s++) {
+          const { gx, gy } = this.sampleSlope(b.x, b.y);
+          b.vx -= gx * (GRAVITY_SCALE * 0.85) * subFactor;
+          b.vy -= gy * (GRAVITY_SCALE * 0.85) * subFactor;
+          b.x += b.vx * subFactor;
+          b.y += b.vy * subFactor;
+          const inEnemy = this.isInsideEnemy(b.x, b.y, b.id);
+          const enemyPhys = inEnemy && !buffs.ice;
+          if (emit && b.isHuman && inEnemy && !b.inEnemyLand && Math.hypot(b.vx, b.vy) > 0.6) {
+            this.fire('enemy', { p: b.id, x: r1(b.x), y: r1(b.y - 3), i: buffs.ice ? 1 : 0 });
           }
-          comps.push({ cells: queue.slice(0, tail), size: tail });
-        }
-        let gained = 0;
-        if (comps.length > 1) {
-          let maxIdx = 0;
-          for (let i = 1; i < comps.length; i++) if (comps[i].size > comps[maxIdx].size) maxIdx = i;
-          for (let i = 0; i < comps.length; i++) {
-            if (i === maxIdx) continue;
-            for (const idx of comps[i].cells) {
-              if (this.grid[idx] !== p.id) { this.grid[idx] = p.id; capturedMask[idx] = 1; gained++; }
+          b.inEnemyLand = inEnemy;
+          const fric = Math.pow(enemyPhys ? ENEMY_TERRITORY_FRICTION : FRICTION_60FPS, subFactor);
+          b.vx *= fric; b.vy *= fric;
+          if (enemyPhys) {
+            const spd = Math.hypot(b.vx, b.vy);
+            if (spd > 0.0001) {
+              const drag = Math.min(spd, ENEMY_TERRITORY_DRAG * subFactor);
+              b.vx -= (b.vx / spd) * drag; b.vy -= (b.vy / spd) * drag;
             }
           }
-        }
-        for (let i = 0; i < tot; i++) {
-          if (pathMask[i] === 1 && this.grid[i] !== p.id) { this.grid[i] = p.id; capturedMask[i] = 1; gained++; }
-        }
-        if (gained > 0) {
-          const cancelledNames = [];
-          for (const other of this.players) {
-            if (other.id === p.id) continue;
-            if (!other.hasLeft && other.path.length <= 1 && !other.moving) continue;
-            const pts = other.moving ? [...other.path, { x: other.x, y: other.y }] : other.path;
-            let overlapped = false;
-            const ox = Math.max(0, Math.min(w - 1, Math.round(other.x)));
-            const oy = Math.max(0, Math.min(h - 1, Math.round(other.y)));
-            if (capturedMask[oy * w + ox] === 1) overlapped = true;
-            else {
-              for (let k = 0; k < pts.length - 1 && !overlapped; k++) {
-                const ax = pts[k].x, ay = pts[k].y, bx = pts[k + 1].x, by = pts[k + 1].y;
-                const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay)));
-                for (let s = 0; s <= steps; s++) {
-                  const t = s / steps;
-                  const gx = Math.max(0, Math.min(w - 1, Math.round(ax + (bx - ax) * t)));
-                  const gy = Math.max(0, Math.min(h - 1, Math.round(ay + (by - ay) * t)));
-                  if (capturedMask[gy * w + gx] === 1) { overlapped = true; break; }
-                }
-              }
-            }
-            if (overlapped) {
-              cancelledNames.push(other.name);
-              this.respawnPlayer(other, `🚩 ${p.name}님이 먼저 땅을 차지해 내 선이 사라졌어요!`);
-            }
+          if (!buffs.ghost) {
+            for (const o of this.obstacles) collideBodyWithObstacle(b, o, 0.65);
           }
-          this.recalcAllPercents();
-          this.renderTerritoryCanvas();
-          this.drawMinimap();
-          if (p.id === this.myId) {
-            SoundFX.playCapture();
-            const pct = ((gained / tot) * 100).toFixed(2);
-            this.floatingTexts.push({ x: p.x, y: p.y, text: `+${pct}% 획득!`, color: p.color.hex, life: 1.0 });
-            showToast(cancelledNames.length > 0
-              ? `🎉 +${pct}% 획득! 먼저 차지해서 ${cancelledNames[0]}님 등의 선을 지웠어요!`
-              : `🎉 땅을 +${pct}% 넓혔어요!`);
+          if (b.x < 1 || b.x >= this.gridW - 1 || b.y < 1 || b.y >= this.gridH - 1) {
+            if (buffs.shield && reflectAtBounds(b, 1, 1, this.gridW - 1, this.gridH - 1, STONE_RADIUS)) {
+              buffs.shield = false;
+              if (emit) this.fire('shield', { p: b.id, x: r1(b.x), y: r1(b.y) });
+            } else { oob = true; break; }
           }
         }
-        return gained;
-      },
-
-      respawnPlayer(p, reason = '') {
-        let found = false;
-        if (p.cells > 10) {
-          for (let tries = 0; tries < 60; tries++) {
-            const rx = Math.floor(Math.random() * this.gridW);
-            const ry = Math.floor(Math.random() * this.gridH);
-            if (this.grid[ry * this.gridW + rx] === p.id) { p.x = rx; p.y = ry; found = true; break; }
-          }
-        }
-        if (!found) {
-          p.x = p.homeX; p.y = p.homeY;
-          const r = 8;
-          for (let y = Math.max(0, Math.floor(p.y - r)); y <= Math.min(this.gridH - 1, Math.ceil(p.y + r)); y++) {
-            for (let x = Math.max(0, Math.floor(p.x - r)); x <= Math.min(this.gridW - 1, Math.ceil(p.x + r)); x++) {
-              if ((x - p.x) ** 2 + (y - p.y) ** 2 <= r * r) this.grid[y * this.gridW + x] = p.id;
-            }
-          }
-          this.recalcAllPercents();
-          this.renderTerritoryCanvas();
-        }
-        p.vx = 0; p.vy = 0; p.moving = false;
-        this.startSortie(p);
-        p.respawnTimer = 0.9;
-        if (p.id === this.myId && reason) { SoundFX.playFail(); showToast(reason); }
+        const stopped = !oob && (Math.hypot(b.vx, b.vy) < STOP_SPEED || b.slideT > 5.5);
+        return { oob, stopped };
       },
 
       screenToWorld(clientX, clientY) {
@@ -4238,13 +4565,15 @@
           return;
         }
         if (this.activePointers.size > 2) return;
+        const pt = this.screenToWorld(e.clientX, e.clientY);
         if (this.targeting) {
-          this.handleTargetTap(this.screenToWorld(e.clientX, e.clientY));
+          const ok = this.dispatchInput({ k: 'target', t: this.targeting, x: r2(pt.x), y: r2(pt.y) });
+          if (ok) { this.targeting = null; updateTargetBanner(); this.updateDock(); }
           return;
         }
-        const pt = this.screenToWorld(e.clientX, e.clientY);
         const me = this.getMe();
-        if (!this.isSpectator && me && !me.moving && me.respawnTimer <= 0) {
+        const busy = !me || me.moving || me.respawnTimer > 0 || (this.pred && this.pred.kind === 'flick');
+        if (!this.isSpectator && me && !busy) {
           const hitRadius = Math.max(14, 22 / this.cam.zoom);
           if (Math.hypot(pt.x - me.x, pt.y - me.y) <= hitRadius) {
             this.drag.active = true;
@@ -4254,9 +4583,7 @@
             return;
           }
           if (me.flicksLeft === me.maxFlicks && !me.hasLeft && this.isInside(pt.x, pt.y, me.id) && this.cam.mode !== 'free') {
-            me.x = pt.x; me.y = pt.y;
-            me.path = [{ x: me.x, y: me.y }];
-            SoundFX.playPlace();
+            this.dispatchInput({ k: 'place', x: r2(pt.x), y: r2(pt.y) });
             return;
           }
         }
@@ -4312,22 +4639,7 @@
         const me = this.getMe();
         if (!me || me.moving) return;
         const dx = me.x - this.drag.currWorldX, dy = me.y - this.drag.currWorldY;
-        const dist = Math.hypot(dx, dy);
-        if (dist >= MIN_PULL_DIST) {
-          const clamped = Math.min(dist, MAX_PULL_DIST);
-          const enemyWeak = (this.isInsideEnemy(me.x, me.y, me.id) && !me.buffs.ice) ? ENEMY_TERRITORY_POWER_MULT : 1.0;
-          const boost = me.buffs.power ? POWER_UP_MULT : 1.0;
-          const speed = clamped * POWER_SCALE * enemyWeak * boost;
-          me.vx = (dx / dist) * speed; me.vy = (dy / dist) * speed;
-          me.moving = true;
-          me.slideT = 0;
-          me.inEnemyLand = this.isInsideEnemy(me.x, me.y, me.id);
-          me.flicksLeft--;
-          this.cam.mode = 'follow';
-          SoundFX.playFlick(clamped / MAX_PULL_DIST, me.buffs.power);
-          me.buffs.power = false;
-          this.updateDock();
-        }
+        if (Math.hypot(dx, dy) >= MIN_PULL_DIST) this.dispatchInput({ k: 'flick', dx: r2(dx), dy: r2(dy) });
       },
 
       onWheel(e) {
@@ -4349,12 +4661,21 @@
         this.drawMinimap();
       },
 
+      // ---------------------------------------------------------------------
+      // 게임 진행 (호스트·오프라인)
+      // ---------------------------------------------------------------------
       update(dt) {
-        if (state.status !== 'playing' || state.helpOpen) return;
+        if (state.status !== 'playing') return;
+        if (state.helpOpen && !this.net) return;
+        if (this.net && this.net.role === 'client') {
+          this.clientUpdate(dt);
+          this.updateCommon(dt);
+          return;
+        }
+
         this.timeLeft -= dt;
         if (this.timeLeft <= 0) { this.timeLeft = 0; this.finishRealtimeMatch(); return; }
 
-        // 맵 아이템 주기 스폰 & 낙하산 보급상자 4개 동시 낙하
         this.itemTimer -= dt;
         if (this.itemTimer <= 0) {
           this.itemTimer = 6 + Math.random() * 3;
@@ -4365,10 +4686,7 @@
           this.crateTimer = 38;
           if (this.crates.length <= 4) this.dropCrates();
         }
-        updateCratesFall(this.crates, dt, (c) => {
-          if (this.isVisible(c.x, c.y)) SoundFX.playThud();
-          this.effects.push({ type: 'ring', x: c.x, y: c.y + 1.5, r: 2, maxR: 8, color: '#a8906e', life: 1 });
-        });
+        updateCratesFall(this.crates, dt, (c) => this.fire('land', { x: r1(c.x), y: r1(c.y) }));
 
         for (const p of this.players) {
           if (p.respawnTimer > 0) { p.respawnTimer = Math.max(0, p.respawnTimer - dt); continue; }
@@ -4412,52 +4730,11 @@
           }
 
           if (p.moving) {
-            p.slideT = (p.slideT || 0) + dt;
-            const subSteps = 2;
-            const subFactor = (dt * 60) / subSteps;
-            let oob = false;
-            for (let s = 0; s < subSteps; s++) {
-              const { gx, gy } = this.sampleSlope(p.x, p.y);
-              p.vx -= gx * (GRAVITY_SCALE * 0.85) * subFactor;
-              p.vy -= gy * (GRAVITY_SCALE * 0.85) * subFactor;
-              p.x += p.vx * subFactor;
-              p.y += p.vy * subFactor;
-              const inEnemy = this.isInsideEnemy(p.x, p.y, p.id);
-              const enemyPhys = inEnemy && !p.buffs.ice;
-              if (p.id === this.myId && inEnemy && !p.inEnemyLand && Math.hypot(p.vx, p.vy) > 0.6) {
-                this.floatingTexts.push(p.buffs.ice
-                  ? { x: p.x, y: p.y - 3, text: '🧊 미끄럽게 통과!', color: '#0891b2', life: 0.9 }
-                  : { x: p.x, y: p.y - 3, text: '🐢 상대 땅 감속!', color: '#7c3aed', life: 0.9 });
-              }
-              p.inEnemyLand = inEnemy;
-              const fric = Math.pow(enemyPhys ? ENEMY_TERRITORY_FRICTION : FRICTION_60FPS, subFactor);
-              p.vx *= fric; p.vy *= fric;
-              if (enemyPhys) {
-                const spd = Math.hypot(p.vx, p.vy);
-                if (spd > 0.0001) {
-                  const drag = Math.min(spd, ENEMY_TERRITORY_DRAG * subFactor);
-                  p.vx -= (p.vx / spd) * drag; p.vy -= (p.vy / spd) * drag;
-                }
-              }
-              if (!p.buffs.ghost) {
-                for (const o of this.obstacles) collideBodyWithObstacle(p, o, 0.65);
-              }
-              if (p.x < 1 || p.x >= this.gridW - 1 || p.y < 1 || p.y >= this.gridH - 1) {
-                if (p.buffs.shield && reflectAtBounds(p, 1, 1, this.gridW - 1, this.gridH - 1, STONE_RADIUS)) {
-                  p.buffs.shield = false;
-                  this.effects.push({ type: 'ring', x: p.x, y: p.y, r: 2, maxR: 11, color: '#0ea5e9', life: 1 });
-                  if (p.id === this.myId) {
-                    SoundFX.playShield();
-                    showToast('🛡️ 안전 가드 발동! 경계에서 튕겨 돌아왔어요');
-                    this.updateDock();
-                  }
-                } else { oob = true; break; }
-              }
-            }
-            if (!oob) this.checkPickups(p);
-            if (oob) {
+            const r = this.simulateBody(p, dt, true);
+            if (!r.oob) this.checkPickups(p);
+            if (r.oob) {
               this.respawnPlayer(p, '아웃! 본진으로 복귀합니다 😅');
-            } else if (Math.hypot(p.vx, p.vy) < STOP_SPEED || p.slideT > 5.5) {
+            } else if (r.stopped) {
               p.vx = 0; p.vy = 0; p.moving = false; p.slideT = 0;
               const prevPt = p.path[p.path.length - 1];
               const currPt = { x: p.x, y: p.y };
@@ -4481,10 +4758,20 @@
           }
         }
 
+        this.updateCommon(dt);
+
+        const n = this.net;
+        if (n && n.role === 'host') {
+          n.frameAcc += dt;
+          if (n.frameAcc >= RT_FRAME_SEC) { n.frameAcc = 0; this.sendFrame(); }
+        }
+      },
+
+      updateCommon(dt) {
         if (this.cam.mode === 'overview') {
           this.cam.x = this.gridW * 0.5; this.cam.y = this.gridH * 0.5;
         } else if (this.followTargetId > 0) {
-          const targetP = this.players.find(p => p.id === this.followTargetId);
+          const targetP = this.byId(this.followTargetId);
           if (targetP) {
             const lerp = Math.min(1, dt * 6.5);
             this.cam.x += (targetP.x - this.cam.x) * lerp;
@@ -4500,20 +4787,17 @@
             this.clampCamera();
           }
         }
-
         for (let i = this.floatingTexts.length - 1; i >= 0; i--) {
           this.floatingTexts[i].y -= dt * 10;
           this.floatingTexts[i].life -= dt * 0.9;
           if (this.floatingTexts[i].life <= 0) this.floatingTexts.splice(i, 1);
         }
-
         for (let i = this.effects.length - 1; i >= 0; i--) {
           const ef = this.effects[i];
           ef.life -= dt * (ef.type === 'blast' ? 1.3 : 2.2);
           ef.r += (ef.maxR - ef.r) * Math.min(1, dt * 8);
           if (ef.life <= 0) this.effects.splice(i, 1);
         }
-
         this.hudSyncAccum += dt;
         if (this.hudSyncAccum >= 0.2) {
           this.hudSyncAccum = 0;
@@ -4522,6 +4806,211 @@
         }
       },
 
+      // ---------------------------------------------------------------------
+      // 온라인: 호스트 → 학생 프레임 전송
+      // ---------------------------------------------------------------------
+      netStart() {
+        const n = this.net;
+        n.base = `rt_rooms/${n.code}/games/${n.gameId}`;
+        n.unsubs = [];
+        n.seq = 0; n.eid = 0; n.events = []; n.frameAcc = 0; n.keyCounter = 0; n.rowCache = {};
+        n.opSeq = 0; n.nextQ = 1; n.opBuf = new Map();
+        n.lastSeq = 0; n.lastEid = 0; n.lastFrameAt = performance.now();
+        n.uidToId = new Map(this.players.map(p => [p.uid, p.id]));
+        if (n.role === 'host') {
+          n.unsubs.push(rtdbMod.onChildAdded(rtRef(n.base + '/inputs'), (s) => {
+            const v = s.val();
+            if (!v) return;
+            const p = this.byId(n.uidToId.get(v.u));
+            if (p && !p.isBot) this.performInput(p, v);
+          }));
+          const onlineRef = rtRef(`rt_rooms/${n.code}/meta/hostOnline`);
+          rtdbMod.set(onlineRef, true).catch(() => {});
+          rtdbMod.onDisconnect(onlineRef).set(false).catch(() => {});
+          requestWakeLock();
+          this.sendFrame();
+        } else {
+          // 지형 변화는 반드시 호스트가 만든 순서대로 적용 (늦게 도착한 것은 기다렸다가 적용)
+          n.unsubs.push(rtdbMod.onChildAdded(rtRef(n.base + '/ops'), (s) => {
+            const op = s.val();
+            if (!op) return;
+            if (typeof op.q !== 'number') { this.applyOp(op); return; }
+            if (op.q < n.nextQ) return;
+            n.opBuf.set(op.q, op);
+            while (n.opBuf.has(n.nextQ)) {
+              const next = n.opBuf.get(n.nextQ);
+              n.opBuf.delete(n.nextQ);
+              n.nextQ++;
+              this.applyOp(next);
+            }
+          }));
+          n.unsubs.push(rtdbMod.onValue(rtRef(n.base + '/frame'), (s) => { const f = s.val(); if (f) this.onFrame(f); }));
+        }
+      },
+
+      stopNet() {
+        const n = this.net;
+        if (n && n.unsubs) n.unsubs.forEach(u => { try { u(); } catch (_) {} });
+        this.net = null;
+        this.pred = null;
+        setNetBanner(false);
+      },
+
+      netSendInput(inp) {
+        const n = this.net;
+        if (!n) return;
+        rtdbMod.push(rtRef(n.base + '/inputs'), { ...inp, u: currentUser.uid })
+          .then(null, () => showToast('📡 전송에 실패했어요. 인터넷 연결을 확인해 주세요.'));
+      },
+
+      sendFrame() {
+        const n = this.net;
+        if (!n || n.role !== 'host') return;
+        n.seq++;
+        n.keyCounter++;
+        const isKey = n.keyCounter % 10 === 1;   // 2초마다 전체 상태 (놓친 프레임 보정)
+        const rows = [], ph = {}, iv = {};
+        for (const p of this.players) {
+          const b = p.buffs;
+          const flags = (p.moving ? 1 : 0) | (p.hasLeft ? 2 : 0) | (p.nextBonus ? 4 : 0) |
+            (b.power ? 8 : 0) | (b.shield ? 16 : 0) | (b.ghost ? 32 : 0) | (b.ice ? 64 : 0);
+          const row = [p.id, r1(p.x), r1(p.y), r2(p.vx), r2(p.vy), p.flicksLeft, p.maxFlicks, flags, p.respawnTimer > 0 ? 1 : 0, p.act || 0];
+          const pathFlat = p.path.length > 1 ? p.path.flatMap(pt => [r1(pt.x), r1(pt.y)]) : [];
+          const invStr = DOCK_ORDER.map(t => Math.min(9, p.inv[t] || 0)).join('');
+          const sig = row.join(',') + '|' + pathFlat.join(',') + '|' + invStr;
+          if (isKey || n.rowCache[p.id] !== sig) {
+            n.rowCache[p.id] = sig;
+            rows.push(row);
+            ph['p' + p.id] = pathFlat.length ? pathFlat : 0;
+            iv['p' + p.id] = 's' + invStr;
+          }
+        }
+        const frame = {
+          s: n.seq, tl: r1(this.timeLeft), r: rows, ph, iv,
+          it: this.mapItems.map(i => [i.id, DOCK_ORDER.indexOf(i.type), r1(i.x), r1(i.y)]),
+          cr: this.crates.map(c => [c.id, DOCK_ORDER.indexOf(c.type), r1(c.x), r1(c.y), r2(c.fall)]),
+          ev: n.events.slice()
+        };
+        rtdbMod.set(rtRef(n.base + '/frame'), JSON.parse(JSON.stringify(frame))).catch(() => {});
+      },
+
+      // ---------------------------------------------------------------------
+      // 온라인: 학생 기기 수신 & 화면 보간
+      // ---------------------------------------------------------------------
+      onFrame(f) {
+        const n = this.net;
+        if (!n || n.role !== 'client' || !(f.s > n.lastSeq)) return;
+        const first = n.lastSeq === 0;
+        n.lastSeq = f.s;
+        n.lastFrameAt = performance.now();
+        if (typeof f.tl === 'number') this.timeLeft = f.tl;
+        const me = this.getMe();
+        const ph = f.ph || {}, iv = f.iv || {};
+        for (const raw of toArray(f.r)) {
+          const row = toArray(raw);
+          const [id, x, y, vx, vy, fl, mf, flags, resp, act] = row;
+          const p = this.byId(id);
+          if (!p) continue;
+          p.flicksLeft = fl; p.maxFlicks = mf || 3;
+          p.hasLeft = !!(flags & 2); p.nextBonus = !!(flags & 4);
+          p.buffs = { power: !!(flags & 8), shield: !!(flags & 16), ghost: !!(flags & 32), ice: !!(flags & 64) };
+          p.respawnTimer = resp ? 0.5 : 0;
+          p.act = act || 0;
+          const key = 'p' + id;
+          if (key in ph) {
+            const a = toArray(ph[key]);
+            p.path = [];
+            for (let i = 0; i + 1 < a.length; i += 2) p.path.push({ x: a[i], y: a[i + 1] });
+            if (!p.path.length) p.path = [{ x, y }];
+          }
+          if (key in iv) {
+            const s = String(iv[key]).replace(/^s/, '');
+            DOCK_ORDER.forEach((t, i) => { p.inv[t] = parseInt(s[i] || '0', 10) || 0; });
+          }
+          const hostMoving = !!(flags & 1);
+          if (p === me && this.pred) {
+            const pr = this.pred;
+            if (pr.kind === 'flick' && p.act > pr.act0) pr.acked = true;
+            if (pr.kind === 'place' && Math.hypot(x - pr.x, y - pr.y) < 0.8) pr.acked = true;
+            pr.hostMoving = hostMoving;
+            pr.hostPos = { x, y, vx, vy };
+            p.netMoving = hostMoving;
+            if (!(pr.acked && !hostMoving)) continue;
+            this.pred = null;
+          }
+          this.setNetState(p, x, y, vx, vy, hostMoving);
+        }
+        this.mapItems = toArray(f.it).map(a => { a = toArray(a); return { id: a[0], type: DOCK_ORDER[a[1]], x: a[2], y: a[3] }; });
+        const prevCr = new Map(this.crates.map(c => [c.id, c]));
+        this.crates = toArray(f.cr).map(a => {
+          a = toArray(a);
+          const old = prevCr.get(a[0]);
+          return { id: a[0], type: DOCK_ORDER[a[1]], x: a[2], y: a[3], fall: Math.max(old ? old.fall : 0, a[4] || 0), landedT: old ? old.landedT : 0 };
+        });
+        const evs = toArray(f.ev).map(toArray);
+        if (first) {
+          for (const e of evs) if (e[0] > n.lastEid) n.lastEid = e[0];
+        } else {
+          for (const e of evs) {
+            if (!(e[0] > n.lastEid)) continue;
+            n.lastEid = e[0];
+            this.fx(e[1], e[2] || {});
+          }
+        }
+        this.updateDock();
+      },
+
+      setNetState(p, x, y, vx, vy, moving) {
+        if (!p.sim) p.sim = { id: p.id, x, y, vx: 0, vy: 0, buffs: {}, moving: false, slideT: 0, inEnemyLand: false };
+        let ox = p.x - x, oy = p.y - y;
+        if (Math.hypot(ox, oy) > 30) { ox = 0; oy = 0; }
+        p.offX = ox; p.offY = oy;
+        Object.assign(p.sim, { x, y, vx: vx || 0, vy: vy || 0, moving, buffs: { ...p.buffs }, slideT: 0 });
+        p.netMoving = moving;
+      },
+
+      clientUpdate(dt) {
+        const n = this.net;
+        const me = this.getMe();
+        const k = Math.exp(-dt * 9);
+        for (const p of this.players) {
+          if (p === me && this.pred) continue;
+          if (p.sim) {
+            // 다음 프레임이 올 때까지 같은 물리로 미리 굴려 부드럽게 표시
+            if (p.sim.moving) {
+              const r = this.simulateBody(p.sim, dt, false);
+              if (r.oob || r.stopped) p.sim.moving = false;
+            }
+            p.offX = (p.offX || 0) * k; p.offY = (p.offY || 0) * k;
+            p.x = p.sim.x + p.offX; p.y = p.sim.y + p.offY;
+          }
+          p.moving = !!p.netMoving;
+          if (p.respawnTimer > 0) p.respawnTimer = Math.max(0, p.respawnTimer - dt);
+        }
+        if (me && this.pred) {
+          const pr = this.pred;
+          if (pr.moving) {
+            const r = this.simulateBody(pr, dt, false);
+            if (r.oob || r.stopped) { pr.moving = false; pr.vx = 0; pr.vy = 0; }
+          }
+          pr.age += dt;
+          const timedOut = (!pr.acked && pr.age > (pr.kind === 'place' ? 1.5 : 3)) || pr.age > 10;
+          if (timedOut) {
+            this.pred = null;
+            const hp = pr.hostPos;
+            if (hp) this.setNetState(me, hp.x, hp.y, hp.vx, hp.vy, !!pr.hostMoving);
+          } else {
+            me.x = pr.x; me.y = pr.y;
+            me.moving = pr.moving || !!pr.hostMoving;
+          }
+        }
+        updateCratesFall(this.crates, dt, null);
+        setNetBanner(performance.now() - n.lastFrameAt > 3000 || this.hostOnline === false);
+      },
+
+      // ---------------------------------------------------------------------
+      // 그리기
+      // ---------------------------------------------------------------------
       draw(now) {
         const w = canvas.width, h = canvas.height;
         const viewW = this.gridW / this.cam.zoom, viewH = this.gridH / this.cam.zoom;
@@ -4724,18 +5213,20 @@
         const mins = Math.floor(Math.max(0, this.timeLeft) / 60);
         const secs = Math.floor(Math.max(0, this.timeLeft) % 60);
         document.getElementById('rtTimerText').textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-        if (this.isSpectator) {
-          const targetP = this.followTargetId > 0 ? this.players.find(p => p.id === this.followTargetId) : null;
+        if (this.isSpectator || !me) {
+          const targetP = this.followTargetId > 0 ? this.byId(this.followTargetId) : null;
           document.getElementById('rtMyRankBadge').textContent = targetP ? `${targetP.name} 추적` : (this.cam.mode === 'overview' ? '전체 관전' : '자유 관전');
           document.getElementById('rtMyPercentHud').textContent = `확대 ${this.cam.zoom.toFixed(1)}x`;
-        } else if (me) {
+        } else {
           document.getElementById('rtMyRankBadge').textContent = `${myRank}위`;
           document.getElementById('rtMyPercentHud').textContent = `${me.percent.toFixed(1)}%`;
+          const pending = this.pred && this.pred.kind === 'flick' && !this.pred.acked ? 1 : 0;
+          const shown = Math.max(0, me.flicksLeft - pending);
           const dotsEl = document.getElementById('rtFlickDots');
           dotsEl.innerHTML = '';
           for (let i = 0; i < me.maxFlicks; i++) {
             const dot = document.createElement('span');
-            dot.className = i < me.flicksLeft
+            dot.className = i < shown
               ? 'w-2.5 h-2.5 rounded-full bg-indigo-500 border border-indigo-900'
               : 'w-2.5 h-2.5 rounded-full bg-slate-200 border border-slate-300 scale-75';
             dotsEl.appendChild(dot);
@@ -4752,24 +5243,43 @@
         }
         this._lbKey = lbKey;
         lbEl.innerHTML = top5.map((p, i) => `
-          <button type="button" data-follow-id="${p.id}" class="w-full flex items-center justify-between gap-2 px-1 py-0.5 rounded hover:bg-white/15 transition text-left ${p.id === this.myId ? 'text-amber-300' : (p.id === this.followTargetId ? 'text-emerald-300 bg-white/10' : 'text-white/90')}" title="클릭하여 ${p.name} 시점으로 관전">
-            <span class="truncate max-w-[96px]">${i + 1}. <span class="inline-block w-2 h-2 rounded-full mr-1" style="background:${p.color.hex}"></span>${p.name}</span>
+          <button type="button" data-follow-id="${p.id}" class="w-full flex items-center justify-between gap-2 px-1 py-0.5 rounded hover:bg-white/15 transition text-left ${p.id === this.myId ? 'text-amber-300' : (p.id === this.followTargetId ? 'text-emerald-300 bg-white/10' : 'text-white/90')}" title="눌러서 ${escapeHtml(p.name)} 시점으로 관전">
+            <span class="truncate max-w-[96px]">${i + 1}. <span class="inline-block w-2 h-2 rounded-full mr-1" style="background:${p.color.hex}"></span>${escapeHtml(p.name)}</span>
             <span data-pct class="tabular-nums">${p.percent.toFixed(1)}%</span>
           </button>`).join('');
       },
 
-      finishRealtimeMatch() {
+      finishRealtimeMatch(final = null) {
+        if (state.status !== 'playing') return;
         state.status = 'finished';
+        this.drag.active = false;
+        this.targeting = null;
+        this.pred = null;
+        updateTargetBanner();
+        setNetBanner(false);
+        if (Array.isArray(final) && final.length) {
+          for (const raw of final) {
+            const r = toArray(raw);
+            const p = this.byId(r[0]);
+            if (p) p.percent = r[1];
+          }
+        }
+        const n = this.net;
+        if (n && n.role === 'host') {
+          this.sendFrame();
+          rtdbMod.update(rtRef(`rt_rooms/${n.code}/meta`), { status: 'finished', final: this.players.map(p => [p.id, r2(p.percent)]) }).catch(() => {});
+        }
         SoundFX.playWin();
         const sorted = [...this.players].sort((a, b) => b.percent - a.percent);
         const champ = sorted[0];
         const myRank = sorted.findIndex(p => p.id === this.myId) + 1;
-        document.getElementById('resultTrophy').textContent = (!this.isSpectator && myRank === 1) ? '👑' : '🏆';
+        const showAsPlayer = !this.isSpectator && myRank > 0;
+        document.getElementById('resultTrophy').textContent = (showAsPlayer && myRank === 1) ? '👑' : '🏆';
         document.getElementById('resultTitle').textContent = `${champ.name} 우승!`;
         document.getElementById('resultTitle').className = 'font-title text-3xl text-indigo-600 mb-1';
-        document.getElementById('resultReason').textContent = this.isSpectator
-          ? `실시간 배틀 종료! 총 ${sorted.length}명 최종 순위입니다.`
-          : `실시간 배틀 종료! 내 최종 순위: ${myRank}위 / ${sorted.length}명`;
+        document.getElementById('resultReason').textContent = showAsPlayer
+          ? `실시간 배틀 종료! 내 최종 순위: ${myRank}위 / ${sorted.length}명`
+          : `실시간 배틀 종료! 총 ${sorted.length}명 최종 순위입니다.`;
         document.getElementById('turnResultCards').classList.add('hidden');
         const listEl = document.getElementById('rtResultList');
         listEl.classList.remove('hidden');
@@ -4778,166 +5288,241 @@
             <div class="flex items-center gap-2 text-xs sm:text-sm">
               <span class="w-5 text-center font-black ${idx === 0 ? 'text-amber-600' : 'text-slate-500'}">${idx + 1}</span>
               <span class="w-3 h-3 rounded-full inline-block" style="background:${p.color.hex}"></span>
-              <span class="text-slate-800">${p.name}${p.id === this.myId ? ' (나)' : ''}</span>
+              <span class="text-slate-800">${escapeHtml(p.name)}${p.id === this.myId ? ' (나)' : ''}</span>
             </div>
             <span class="font-title text-sm sm:text-base text-indigo-700">${p.percent.toFixed(1)}%</span>
           </div>`).join('');
+        const rb = document.getElementById('rematchBtn');
+        const isClient = !!(n && n.role === 'client');
+        rb.disabled = isClient;
+        rb.textContent = isClient ? '⏳ 선생님이 새 경기를 열면 자동으로 시작해요' : '🔄 새 지형으로 다시 하기';
         document.getElementById('resultModal').classList.remove('hidden');
+      },
+
+      // ---------------------------------------------------------------------
+      // 학급 QR 방 (Realtime Database)
+      // ---------------------------------------------------------------------
+      renderJoinedList(list, hostSpectator) {
+        const cnt = list.length;
+        const dims = this.getMapDims(Math.max(2, cnt));
+        document.getElementById('qrJoinedCountText').textContent = hostSpectator
+          ? `입장 학생: ${cnt}명 (선생님은 관전 · 자동 ${dims.label})`
+          : `현재 입장: ${cnt}명 (자동 ${dims.label})`;
+        const listEl = document.getElementById('qrJoinedList');
+        listEl.classList.remove('hidden');
+        listEl.innerHTML = cnt > 0
+          ? list.map(p => `<span class="px-2 py-0.5 rounded-full bg-white border border-indigo-200 text-[10px] font-bold text-indigo-800">${escapeHtml(p.name)}</span>`).join('')
+          : `<span class="text-[10px] font-bold text-slate-400">학생들의 QR 입장을 기다리는 중...</span>`;
+      },
+
+      leaveLobby() {
+        const L = this.lobby;
+        if (L && L.unsubs) L.unsubs.forEach(u => { try { u(); } catch (_) {} });
+        this.lobby = null;
+      },
+
+      leaveOnline() {
+        const L = this.lobby;
+        this.stopNet();
+        if (L && !L.offline && rtdbReady && currentUser) {
+          if (L.isHost) {
+            rtdbMod.update(rtRef(`rt_rooms/${L.code}/meta`), { status: 'closed', hostOnline: false }).catch(() => {});
+          } else if (!L.asSpectator) {
+            rtdbMod.remove(rtRef(`rt_rooms/${L.code}/players/${currentUser.uid}`)).catch(() => {});
+          }
+        }
+        this.leaveLobby();
       },
 
       async createOnlineRealtimeRoom() {
         const asSpectator = document.getElementById('hostSpectatorCheck')?.checked ?? true;
         const nick = document.getElementById('rtNicknameInput').value.trim() || '선생님';
-        const code = String(Math.floor(1000 + Math.random() * 9000));
-        this.rtRoomCode = code;
-        this.rtIsHost = true;
-        this.rtHostAsSpectator = asSpectator;
-        this.rtRoomPlayers = asSpectator ? [] : [{ uid: currentUser?.uid || 'local_host', name: nick, avatar: this.myAvatar }];
-        const updateJoinedUI = (list) => {
-          this.rtRoomPlayers = list;
-          const cnt = list.length;
-          const dims = this.getMapDims(Math.max(2, cnt));
+        this.leaveOnline();
+
+        if (!rtdbReady || !currentUser) {
+          const code = String(Math.floor(1000 + Math.random() * 9000));
+          this.lobby = { code, isHost: true, asSpectator, offline: true, nick, players: [], unsubs: [] };
+          openQrModal({
+            title: `학급 실시간 방 [${code}] (체험)`,
+            desc: '온라인 서버가 설정되지 않아 이 기기에서만 체험할 수 있어요. README의 Firebase 설정을 마치면 학생들이 함께 들어올 수 있어요.',
+            url: buildJoinUrl(code, 'realtime'), roomCode: code, showStartBtn: true
+          });
           document.getElementById('qrJoinedCountText').textContent = asSpectator
-            ? `입장 학생: ${cnt}명 (선생님은 관전자 전용 · 자동 ${dims.label})`
-            : `현재 입장: ${cnt}명 (자동 ${dims.label})`;
-          const listEl = document.getElementById('qrJoinedList');
-          listEl.classList.remove('hidden');
-          listEl.innerHTML = cnt > 0
-            ? list.map(p => `<span class="px-2 py-0.5 rounded-full bg-white border border-indigo-200 text-[10px] font-bold text-indigo-800">${p.name}</span>`).join('')
-            : `<span class="text-[10px] font-bold text-slate-400">학생들의 QR 입장을 기다리는 중...</span>`;
-        };
-        if (firebaseReady && currentUser) {
-          try {
-            const roomRef = fbFirestore.doc(db, 'artifacts', appId, 'public', 'data', 'rt_rooms', code);
-            await fbFirestore.setDoc(roomRef, {
-              code, status: 'waiting', maxPlayers: 30, duration: this.selectedDuration,
-              seed: Math.floor(Math.random() * 9999999) + 1, hostUid: currentUser.uid,
-              hostIsSpectator: asSpectator, players: this.rtRoomPlayers
-            });
-            if (this.unsubRtRoom) this.unsubRtRoom();
-            this.unsubRtRoom = fbFirestore.onSnapshot(roomRef, (snap) => {
-              if (!snap.exists()) return;
-              const d = snap.data();
-              updateJoinedUI(Array.isArray(d.players) ? d.players : this.rtRoomPlayers);
-            }, () => {});
-          } catch (err) {
-            console.warn('실시간 방 DB 저장 생략:', err);
-          }
-        } else {
-          updateJoinedUI(this.rtRoomPlayers);
-          document.getElementById('qrJoinedCountText').textContent = asSpectator
-            ? `오프라인 체험: [지금 시작!]을 누르면 관전자 모드로 AI 대전을 관전합니다.`
-            : `오프라인 체험: [지금 시작!]을 누르면 AI와 실시간 대전을 시작합니다.`;
+            ? '[지금 시작!]을 누르면 AI끼리의 대결을 관전합니다.'
+            : '[지금 시작!]을 누르면 AI와 실시간 대전을 시작합니다.';
+          document.getElementById('qrJoinedList').classList.add('hidden');
+          return;
         }
+
+        // 방 코드 확보: 비어 있거나, 닫혔거나, 3시간 지난 코드만 원자적으로 차지 (다른 반과 겹치지 않음)
+        let code = null;
+        for (let i = 0; i < 25 && !code; i++) {
+          const c = String(1000 + Math.floor(Math.random() * 9000));
+          try {
+            const res = await rtdbMod.runTransaction(rtRef(`rt_rooms/${c}/meta`), (cur) => {
+              if (cur && cur.status !== 'closed' && (cur.createdAt || 0) > Date.now() - RT_STALE_MS) return;
+              return {
+                code: c, status: 'waiting', hostUid: currentUser.uid, hostIsSpectator: asSpectator,
+                duration: this.selectedDuration, createdAt: Date.now(), gameId: 0, hostOnline: true
+              };
+            });
+            if (res.committed) code = c;
+          } catch (err) {
+            console.warn('방 코드 확보 실패:', err);
+          }
+        }
+        if (!code) { showToast('방을 만들지 못했어요. 인터넷 연결과 Firebase 설정을 확인해 주세요.'); return; }
+
+        await rtdbMod.update(rtRef(`rt_rooms/${code}`), { players: null, games: null }).catch(() => {});
+        if (!asSpectator) {
+          await rtdbMod.set(rtRef(`rt_rooms/${code}/players/${currentUser.uid}`), { name: nick.slice(0, 8), avatar: this.myAvatar, joinedAt: Date.now() }).catch(() => {});
+        }
+        rtdbMod.onDisconnect(rtRef(`rt_rooms/${code}/meta/hostOnline`)).set(false).catch(() => {});
+
+        this.lobby = { code, isHost: true, asSpectator, offline: false, nick, players: [], unsubs: [] };
+        this.lobby.unsubs.push(rtdbMod.onValue(rtRef(`rt_rooms/${code}/players`), (snap) => {
+          if (!this.lobby || this.lobby.code !== code) return;
+          this.lobby.players = sortRoomPlayers(snap.val());
+          if (state.status !== 'playing') this.renderJoinedList(this.lobby.players, asSpectator);
+        }));
+
         openQrModal({
           title: `학급 실시간 방 [${code}]`,
           desc: asSpectator
-            ? `선생님은 관전자 전용(플레이어 제외)! 들어온 학생 수대로 맵 크기가 자동 조절됩니다.`
-            : `학생들이 QR로 들어온 인원수대로 맵 크기가 자동 조절됩니다!`,
+            ? '선생님 기기가 경기를 진행하고 관전해요(플레이어 제외). 학생이 들어온 만큼 맵이 자동으로 커져요.'
+            : '선생님 기기가 경기를 진행해요. 학생이 들어온 만큼 맵이 자동으로 커져요.',
           url: buildJoinUrl(code, 'realtime'), roomCode: code, showStartBtn: true
         });
+        this.renderJoinedList([], asSpectator);
       },
 
       async hostStartOnlineRealtimeRoom() {
+        const L = this.lobby;
         const nick = document.getElementById('rtNicknameInput').value.trim() || '선생님';
         const seed = Math.floor(Math.random() * 9999999) + 1;
-        const asSpectator = this.rtHostAsSpectator;
-        if (firebaseReady && currentUser && this.rtRoomCode) {
-          try {
-            const roomRef = fbFirestore.doc(db, 'artifacts', appId, 'public', 'data', 'rt_rooms', this.rtRoomCode);
-            const snap = await fbFirestore.getDoc(roomRef);
-            if (snap.exists()) {
-              const d = snap.data();
-              const players = Array.isArray(d.players) ? d.players : this.rtRoomPlayers;
-              await fbFirestore.updateDoc(roomRef, { status: 'playing', seed: d.seed || seed });
-              const isAiFallback = players.length < 2;
-              this.startRealtimeMatch(d.seed || seed, nick, isAiFallback ? null : players,
-                isAiFallback ? Math.max(2, this.aiCount + (asSpectator ? 0 : 1)) : Math.max(2, players.length),
-                isAiFallback, asSpectator);
-              return;
-            }
-          } catch (err) {
-            console.warn('방 시작 업데이트 생략:', err);
-          }
+        if (!L || L.offline || !rtdbReady) {
+          const asSpectator = L ? L.asSpectator : true;
+          const simCount = asSpectator ? Math.max(2, this.aiCount) : (this.aiCount + 1);
+          this.startRealtimeMatch(seed, nick, null, simCount, true, asSpectator);
+          return;
         }
-        const simCount = asSpectator ? Math.max(2, this.aiCount) : (this.aiCount + 1);
-        this.startRealtimeMatch(seed, nick, null, simCount, true, asSpectator);
+        const order = (L.players || []).slice(0, 30).map(p => ({ uid: p.uid, name: p.name, avatar: p.avatar }));
+        if (order.length < 2) {
+          showToast(`2명 이상 들어와야 시작할 수 있어요! (지금 ${order.length}명)`);
+          return;
+        }
+        const gameId = Date.now();
+        try {
+          await rtdbMod.set(rtRef(`rt_rooms/${L.code}/games`), null);
+          await rtdbMod.update(rtRef(`rt_rooms/${L.code}/meta`), {
+            status: 'playing', seed, gameId, order, duration: this.selectedDuration, hostOnline: true, final: null
+          });
+        } catch (err) {
+          console.warn(err);
+          showToast('경기를 시작하지 못했어요. 인터넷 연결을 확인해 주세요.');
+          return;
+        }
+        this.startRealtimeMatch(seed, nick, order, order.length, false, L.asSpectator, { role: 'host', code: L.code, gameId });
       },
 
       async joinOnlineRealtimeRoom(code, asSpectator = false) {
         if (!/^\d{4}$/.test(code)) { showToast('4자리 방 코드를 입력해주세요!'); return; }
-        const nick = document.getElementById('rtNicknameInput').value.trim() || (asSpectator ? '관전자' : '학생');
-        this.rtRoomCode = code;
-        this.rtIsHost = false;
-        if (firebaseReady && currentUser) {
-          try {
-            const roomRef = fbFirestore.doc(db, 'artifacts', appId, 'public', 'data', 'rt_rooms', code);
-            const snap = await fbFirestore.getDoc(roomRef);
-            if (!snap.exists()) { showToast('존재하지 않는 실시간 방 코드입니다.'); return; }
-            const d = snap.data();
-            const players = Array.isArray(d.players) ? [...d.players] : [];
-            if (!asSpectator && !players.some(p => p.uid === currentUser.uid)) {
-              if (players.length >= 30) { showToast('방 인원(최대 30명)이 가득 찼습니다!'); return; }
-              players.push({ uid: currentUser.uid, name: nick, avatar: this.myAvatar });
-              await fbFirestore.updateDoc(roomRef, { players });
-            }
-            this.selectedDuration = d.duration || 180;
-            if (d.status === 'playing') {
-              const isAiFallback = players.length < 2;
-              this.startRealtimeMatch(d.seed, nick, isAiFallback ? null : players,
-                isAiFallback ? Math.max(2, this.aiCount) : players.length, isAiFallback, asSpectator);
-              return;
-            }
-            openQrModal({
-              title: asSpectator ? `👁️ 관전자 대기 [${code}]` : `실시간 방 [${code}] 입장 완료!`,
-              desc: asSpectator
-                ? `플레이어에 포함되지 않은 관전자 전용 입장입니다. 경기가 시작되면 전체 화면으로 관전합니다.`
-                : `선생님이 [지금 시작!]을 누르면 입장한 학생 수에 맞춰 자동으로 시작됩니다.`,
-              url: buildJoinUrl(code, 'realtime'), roomCode: code, showStartBtn: false
-            });
-            if (this.unsubRtRoom) this.unsubRtRoom();
-            this.unsubRtRoom = fbFirestore.onSnapshot(roomRef, (s) => {
-              if (!s.exists()) return;
-              const cur = s.data();
-              const list = Array.isArray(cur.players) ? cur.players : [];
-              const dims = this.getMapDims(Math.max(2, list.length));
-              document.getElementById('qrJoinedCountText').textContent = `입장 학생: ${list.length}명 (자동 ${dims.label})`;
-              const listEl = document.getElementById('qrJoinedList');
-              listEl.classList.remove('hidden');
-              listEl.innerHTML = list.map(p => `<span class="px-2 py-0.5 rounded-full bg-white border border-indigo-200 text-[10px] font-bold text-indigo-800">${p.name}</span>`).join('');
-              if (cur.status === 'playing' && state.status !== 'playing') {
-                const isAiFallback = list.length < 2;
-                this.startRealtimeMatch(cur.seed, nick, isAiFallback ? null : list,
-                  isAiFallback ? Math.max(2, this.aiCount) : list.length, isAiFallback, asSpectator);
-              }
-            }, () => {});
-            return;
-          } catch (err) {
-            console.warn(err);
-          }
+        const nick = (document.getElementById('rtNicknameInput').value.trim() || (asSpectator ? '관전자' : '학생')).slice(0, 8);
+        this.leaveOnline();
+
+        if (!rtdbReady || !currentUser) {
+          const simCount = asSpectator ? Math.max(2, this.aiCount) : (this.aiCount + 1);
+          showToast('온라인 서버가 설정되지 않아 이 기기에서 AI와 체험해요.');
+          this.startRealtimeMatch(parseInt(code, 10) * 7919, nick, null, simCount, true, asSpectator);
+          return;
         }
-        const simCount = asSpectator ? Math.max(2, this.aiCount) : (this.aiCount + 1);
-        showToast(asSpectator ? `👁️ 방 [${code}] 관전자 모드로 입장합니다!` : `방 [${code}] 실시간 모드로 입장합니다!`);
-        this.startRealtimeMatch(parseInt(code, 10) * 7919, nick, null, simCount, true, asSpectator);
+
+        let meta = null;
+        try {
+          meta = (await rtdbMod.get(rtRef(`rt_rooms/${code}/meta`))).val();
+        } catch (err) {
+          showToast('방 정보를 불러오지 못했어요. 인터넷 연결을 확인해 주세요.');
+          return;
+        }
+        if (!meta || meta.status === 'closed' || (meta.createdAt || 0) < Date.now() - RT_STALE_MS) {
+          showToast('없는 방이거나 이미 끝난 방이에요. 방 코드를 확인해 주세요.');
+          return;
+        }
+        if (!asSpectator && meta.status !== 'playing') {
+          const ps = (await rtdbMod.get(rtRef(`rt_rooms/${code}/players`)).catch(() => null))?.val() || {};
+          if (Object.keys(ps).length >= 30 && !ps[currentUser.uid]) { showToast('방 인원(최대 30명)이 가득 찼어요!'); return; }
+          const myRef = rtRef(`rt_rooms/${code}/players/${currentUser.uid}`);
+          await rtdbMod.set(myRef, { name: nick, avatar: this.myAvatar, joinedAt: Date.now() });
+          rtdbMod.onDisconnect(myRef).remove().catch(() => {});
+        }
+
+        this.lobby = { code, isHost: false, asSpectator, offline: false, nick, players: [], unsubs: [] };
+        openQrModal({
+          title: asSpectator ? `👁️ 관전 대기 [${code}]` : `실시간 방 [${code}] 입장 완료!`,
+          desc: asSpectator
+            ? '플레이어에 포함되지 않는 관전 입장이에요. 경기가 시작되면 자동으로 관전 화면이 열려요.'
+            : '선생님이 [지금 시작!]을 누르면 자동으로 경기가 시작돼요. 이 화면을 켜 두세요.',
+          url: buildJoinUrl(code, 'realtime'), roomCode: code, showStartBtn: false
+        });
+        this.lobby.unsubs.push(rtdbMod.onValue(rtRef(`rt_rooms/${code}/players`), (snap) => {
+          if (!this.lobby || this.lobby.code !== code) return;
+          this.lobby.players = sortRoomPlayers(snap.val());
+          if (state.status !== 'playing') this.renderJoinedList(this.lobby.players, !!meta.hostIsSpectator);
+        }));
+        this.lobby.unsubs.push(rtdbMod.onValue(rtRef(`rt_rooms/${code}/meta`), (snap) => this.onClientMeta(snap.val())));
       },
 
-      startRealtimeMatch(seed, humanName, onlinePlayers = null, totalPlayers = null, isComputerMode = true, isSpectator = false) {
+      onClientMeta(meta) {
+        const L = this.lobby;
+        if (!L || L.isHost || !meta) return;
+        if (meta.status === 'closed') {
+          showToast('선생님이 방을 닫았어요. 로비로 돌아갑니다.');
+          returnToLobby();
+          return;
+        }
+        this.hostOnline = meta.hostOnline !== false;
+        if (meta.status === 'playing' && meta.gameId && (!this.net || this.net.gameId !== meta.gameId)) {
+          const order = toArray(meta.order);
+          const inGame = !L.asSpectator && order.some(o => o && o.uid === currentUser.uid);
+          if (!inGame && !L.asSpectator) showToast('경기가 이미 시작돼서 관전으로 들어가요 👁️ 다음 판에 함께해요!');
+          this.selectedDuration = meta.duration || 180;
+          this.startRealtimeMatch(meta.seed, L.nick, order, order.length, false, !inGame, { role: 'client', code: L.code, gameId: meta.gameId });
+          return;
+        }
+        if (meta.status === 'finished' && this.net && this.net.gameId === meta.gameId && state.status === 'playing') {
+          this.finishRealtimeMatch(toArray(meta.final));
+        }
+      },
+
+      startRealtimeMatch(seed, humanName, onlinePlayers = null, totalPlayers = null, isComputerMode = true, isSpectator = false, netOpts = null) {
+        this.stopNet();
         const count = totalPlayers || (onlinePlayers ? Math.max(2, onlinePlayers.length) : (isSpectator ? Math.max(2, this.aiCount) : this.aiCount + 1));
         state.gameType = 'realtime';
         state.status = 'playing';
         document.getElementById('lobbyModal').classList.add('hidden');
         document.getElementById('qrModal').classList.add('hidden');
         document.getElementById('resultModal').classList.add('hidden');
+        const rb = document.getElementById('rematchBtn');
+        rb.disabled = false;
+        rb.textContent = '🔄 새 지형으로 다시 하기';
         this.switchUI(true);
         resizeCanvas();
+        if (netOpts) this.net = { role: netOpts.role, code: netOpts.code, gameId: netOpts.gameId };
         this.initWorld(count, this.selectedDuration, seed, humanName, onlinePlayers, isComputerMode, isSpectator);
+        if (this.net) this.netStart();
         SoundFX.playCapture();
         BGMPlayer.start();
-        showToast(isSpectator
-          ? `👁️ 관전자 전용 모드 (${count}명 대전) · 확대/축소와 미니맵으로 자유롭게 관전하세요!`
-          : isComputerMode
-            ? `🤖 컴퓨터 ${count - 1}명(${this.getDifficultyLabel()})과 대결 시작!`
-            : `⚡ ${count}명 실시간 배틀 시작! 외곽 거점에서 땅을 넓히세요!`);
+        if (this.net && this.net.role === 'host') {
+          showToast(`⚡ ${count}명 온라인 배틀 시작! 경기가 끝날 때까지 이 기기 화면을 켜 두세요.`);
+        } else if (this.net) {
+          showToast(isSpectator ? `👁️ ${count}명 경기를 관전합니다!` : `⚡ ${count}명 실시간 배틀 시작! 외곽 거점에서 땅을 넓히세요!`);
+        } else {
+          showToast(isSpectator
+            ? `👁️ 관전 모드 (${count}명 대전) · 확대/축소와 미니맵으로 자유롭게 관전하세요!`
+            : isComputerMode
+              ? `🤖 컴퓨터 ${count - 1}명(${this.getDifficultyLabel()})과 대결 시작!`
+              : `⚡ ${count}명 실시간 배틀 시작! 외곽 거점에서 땅을 넓히세요!`);
+        }
       }
     };
 
@@ -5001,7 +5586,7 @@
           html += `<path d="M${cx},${cy} L${x1.toFixed(1)},${y1.toFixed(1)} A${r},${r} 0 0,1 ${x2.toFixed(1)},${y2.toFixed(1)} Z" fill="${fill}" stroke="#ffffff" stroke-width="2.5"/>`;
           const midDeg = startDeg + 30, midRad = (midDeg * Math.PI) / 180;
           const tx = cx + 62 * Math.cos(midRad), ty = cy + 62 * Math.sin(midRad);
-          const label = (isP1 ? state.p1Name : state.p2Name).slice(0, 5);
+          const label = escapeHtml((isP1 ? state.p1Name : state.p2Name).slice(0, 5));
           html += `<text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" fill="#ffffff" font-size="13" font-weight="900" text-anchor="middle" dominant-baseline="middle" transform="rotate(${midDeg + 90} ${tx.toFixed(1)} ${ty.toFixed(1)})">${label}</text>`;
         }
         svg.innerHTML = html;
@@ -5185,7 +5770,7 @@
     });
     document.getElementById('rtQrShareBtn').addEventListener('click', () => {
       SoundFX.playClick();
-      openQrModal({ title: '실시간 게임 초대 QR', desc: '친구 패드 카메라로 찍으면 바로 게임 페이지로 연결됩니다!', url: buildJoinUrl(RT.rtRoomCode || '', 'realtime'), roomCode: RT.rtRoomCode || '' });
+      openQrModal({ title: '실시간 게임 초대 QR', desc: '친구 패드 카메라로 찍으면 바로 게임 페이지로 연결됩니다!', url: buildJoinUrl(RT.lobby?.code || '', 'realtime'), roomCode: RT.lobby?.code || '' });
     });
     document.getElementById('closeQrModalBtn').addEventListener('click', () => { SoundFX.playClick(); document.getElementById('qrModal').classList.add('hidden'); });
 
@@ -5304,7 +5889,12 @@
 
     function returnToLobby() {
       if (state.unsubRoom) { state.unsubRoom(); state.unsubRoom = null; }
-      if (RT.unsubRtRoom) { RT.unsubRtRoom(); RT.unsubRtRoom = null; }
+      if (state.mode === 'online' && state.roomCode && firebaseReady) {
+        fbFirestore.updateDoc(getRoomRef(state.roomCode), { status: 'closed' }).catch(() => {});
+      }
+      state.mode = 'local';
+      state.roomCode = null;
+      RT.leaveOnline();
       state.gameType = 'turn';
       RT.switchUI(false);
       state.status = 'lobby';
@@ -5320,6 +5910,10 @@
 
     document.getElementById('rematchBtn').addEventListener('click', async () => {
       document.getElementById('resultModal').classList.add('hidden');
+      if (state.gameType === 'realtime' && RT.net) {
+        if (RT.net.role === 'host') RT.hostStartOnlineRealtimeRoom();
+        return;
+      }
       if (state.gameType === 'realtime') {
         const nick = document.getElementById('rtNicknameInput').value.trim() || '우리반 대표';
         const total = RT.isComputerMode ? (RT.isSpectator ? Math.max(2, RT.aiCount) : RT.aiCount + 1) : RT.players.length;
