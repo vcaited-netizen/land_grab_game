@@ -1,0 +1,4222 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>운동장 땅따먹기 - 턴제 & 실시간 30인 QR 대전</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- QR Code Generator -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <!-- Google Fonts: Jua & Noto Sans KR -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Jua&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
+
+  <style>
+    /* 기본 폰트 및 태블릿 터치 최적화 */
+    body {
+      font-family: 'Noto Sans KR', sans-serif;
+      background-color: #2f3b2c;
+      background-image:
+        radial-gradient(rgba(255, 255, 255, 0.05) 1.5px, transparent 1.5px),
+        linear-gradient(160deg, #33422f 0%, #263124 100%);
+      background-size: 22px 22px, 100% 100%;
+      overscroll-behavior: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+    }
+
+    .font-title {
+      font-family: 'Jua', sans-serif;
+    }
+
+    /* 게임 보드 캔버스 터치/스크롤 방지 */
+    #gameCanvas {
+      touch-action: none;
+      display: block;
+      width: 100%;
+      height: 100%;
+      cursor: pointer;
+    }
+
+    /* 3D 촉감 버튼 */
+    .btn-3d {
+      transition: transform 0.1s ease, box-shadow 0.1s ease, filter 0.15s ease;
+    }
+    .btn-3d:active:not(:disabled) {
+      transform: translateY(3px);
+    }
+
+    /* 턴 배지 및 긴급 타이머 애니메이션 */
+    @keyframes softPulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.04); }
+    }
+    .animate-soft-pulse {
+      animation: softPulse 1.8s infinite ease-in-out;
+    }
+
+    @keyframes urgentPulse {
+      0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+      50% { transform: scale(1.08); box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+    }
+    .animate-urgent {
+      animation: urgentPulse 0.45s infinite ease-in-out;
+    }
+
+    /* 토스트 팝업 */
+    @keyframes popIn {
+      0% { opacity: 0; transform: translate(-50%, -18px) scale(0.92); }
+      100% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+    }
+    .toast-pop {
+      animation: popIn 0.24s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+    }
+
+    /* 운동장 외곽 나무/콘크리트 테두리 프레임 (슬림화하여 보드 면적 극대화) */
+    .board-frame {
+      box-shadow:
+        0 14px 28px -8px rgba(0, 0, 0, 0.55),
+        0 0 0 3px #8b6b46,
+        0 0 0 6px #5a4329,
+        0 0 0 8px rgba(255, 255, 255, 0.12);
+    }
+
+    /* 아이템 버튼 활성 글로우 */
+    .item-active-glow {
+      box-shadow: 0 0 0 3px #facc15, 0 0 16px rgba(250, 204, 21, 0.75) !important;
+      transform: translateY(-2px);
+    }
+
+    /* 아바타 표정 변화 바운스 */
+    @keyframes avatarPop {
+      0% { transform: scale(1); }
+      40% { transform: scale(1.22) rotate(-5deg); }
+      75% { transform: scale(0.95) rotate(3deg); }
+      100% { transform: scale(1) rotate(0deg); }
+    }
+    .avatar-pop {
+      animation: avatarPop 0.42s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+
+    /* 룰렛 휠 부드러운 회전 */
+    #rouletteWheel {
+      will-change: transform;
+    }
+
+    /* 실시간 미니맵 스타일 */
+    #minimapWrap {
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45), 0 0 0 2px rgba(255, 255, 255, 0.75);
+    }
+  </style>
+</head>
+<body class="h-[100dvh] w-screen overflow-hidden flex flex-col text-slate-800">
+
+  <!-- ==================== 상단 HUD ==================== -->
+  <header class="w-full max-w-[1440px] mx-auto px-2 sm:px-3 pt-1.5 pb-0.5 flex-shrink-0 z-10">
+    <!-- 턴제 모드 HUD -->
+    <div id="turnHudBox" class="bg-[#fcfaf5]/95 backdrop-blur rounded-2xl shadow-lg border-2 border-amber-800/20 px-2 sm:px-3 py-1 sm:py-1.5 flex flex-col gap-1">
+      <!-- 윗줄: P1 | 중앙(라운드, 턴, 돌 아이콘, 5초 초시계) | P2 + 유틸 -->
+      <div class="flex items-center justify-between gap-1.5 sm:gap-2">
+
+        <!-- P1 (파랑팀) -->
+        <div id="p1Badge" class="flex items-center gap-1.5 sm:gap-2 px-1.5 sm:px-2.5 py-1 rounded-xl bg-blue-50 border-2 border-blue-200 transition-all min-w-0">
+          <div id="p1AvatarHud" class="w-9 h-9 sm:w-11 sm:h-11 rounded-full bg-white border-2 border-blue-400 shadow-sm flex items-center justify-center overflow-hidden flex-shrink-0"></div>
+          <div class="leading-tight min-w-0">
+            <div class="flex items-center gap-1">
+              <span id="p1NameHud" class="text-[11px] sm:text-sm font-bold text-blue-900 truncate max-w-[58px] sm:max-w-[95px]">파랑팀</span>
+              <span id="p1BonusBadge" class="hidden px-1 py-0.2 rounded bg-amber-400 text-amber-950 text-[9px] sm:text-[10px] font-black whitespace-nowrap">+1예약</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <span id="p1Percent" class="text-xs sm:text-base font-black text-blue-600">3.2%</span>
+              <span id="p1MoodTag" class="hidden md:inline-block text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-blue-100 text-blue-700 whitespace-nowrap">평온</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 중앙: 라운드 + 턴 + 남은 튕기기 + 5초 초시계 -->
+        <div class="flex items-center justify-center gap-2 sm:gap-3 flex-1 min-w-0">
+          <!-- 라운드/턴/돌 -->
+          <div class="flex flex-col items-center justify-center min-w-0">
+            <div class="flex items-center gap-1 sm:gap-1.5 flex-wrap justify-center">
+              <span id="roundBadge" class="px-2 py-0.5 rounded-full bg-amber-100 text-amber-950 text-[10px] sm:text-xs font-bold border border-amber-300 whitespace-nowrap">
+                1 / 12R
+              </span>
+              <span id="turnBadge" class="px-2.5 py-0.5 rounded-full bg-blue-600 text-white text-[11px] sm:text-xs font-bold shadow-sm animate-soft-pulse whitespace-nowrap">
+                파랑팀 차례
+              </span>
+            </div>
+            <!-- 남은 튕기기 돌 아이콘 (3개 또는 4개) -->
+            <div class="flex items-center gap-1 mt-1" title="남은 튕기기 횟수">
+              <span class="hidden sm:inline text-[11px] font-bold text-slate-500 mr-0.5">튕기기</span>
+              <div id="flickDots" class="flex items-center gap-1"></div>
+            </div>
+          </div>
+
+          <!-- 5초 샷클락 위젯 -->
+          <div id="shotClockBox" class="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-50 border-2 border-emerald-300 shadow-sm transition-colors flex-shrink-0">
+            <svg class="w-4 h-4 sm:w-5 sm:h-5 text-emerald-600 flex-shrink-0" id="shotClockIcon" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 2m6-2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <div class="leading-none text-center">
+              <div class="text-[9px] font-bold text-slate-500">제한시간</div>
+              <div id="shotClockText" class="font-title text-base sm:text-xl text-emerald-700 tabular-nums">5.0</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- P2 (빨강팀) + 유틸 버튼 -->
+        <div class="flex items-center gap-1 sm:gap-2">
+          <div id="p2Badge" class="flex items-center gap-1.5 sm:gap-2 px-1.5 sm:px-2.5 py-1 rounded-xl bg-red-50 border-2 border-red-200 transition-all min-w-0">
+            <div class="leading-tight text-right min-w-0">
+              <div class="flex items-center justify-end gap-1">
+                <span id="p2BonusBadge" class="hidden px-1 py-0.2 rounded bg-amber-400 text-amber-950 text-[9px] sm:text-[10px] font-black whitespace-nowrap">+1예약</span>
+                <span id="p2NameHud" class="text-[11px] sm:text-sm font-bold text-red-900 truncate max-w-[58px] sm:max-w-[95px]">빨강팀</span>
+              </div>
+              <div class="flex items-center justify-end gap-1.5">
+                <span id="p2MoodTag" class="hidden md:inline-block text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-red-100 text-red-700 whitespace-nowrap">평온</span>
+                <span id="p2Percent" class="text-xs sm:text-base font-black text-red-600">3.2%</span>
+              </div>
+            </div>
+            <div id="p2AvatarHud" class="w-9 h-9 sm:w-11 sm:h-11 rounded-full bg-white border-2 border-red-400 shadow-sm flex items-center justify-center overflow-hidden flex-shrink-0"></div>
+          </div>
+
+          <!-- 유틸리티 버튼 -->
+          <div class="flex items-center gap-1">
+            <button id="bgmBtn" class="px-2 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 active:scale-95 text-amber-900 border border-amber-200 transition flex items-center gap-1 text-[11px] font-bold" title="배경음악 다음 곡 / 켜기" aria-label="배경음악 전환">
+              <span id="bgmIcon">🎵</span>
+              <span id="bgmTrackLabel" class="hidden md:inline max-w-[78px] truncate">BGM</span>
+            </button>
+            <button id="muteBtn" class="p-1.5 sm:p-2 rounded-xl bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 transition" title="전체 소리 켜기/끄기" aria-label="소리 켜기/끄기">
+              <svg id="soundOnIcon" class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M11 5L6 9H2v6h4l5 4V5zM15.54 8.46a5 5 0 010 7.07M19.07 4.93a10 10 0 010 14.14"/>
+              </svg>
+              <svg id="soundOffIcon" class="w-4 h-4 sm:w-5 sm:h-5 hidden text-slate-400" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M11 5L6 9H2v6h4l5 4V5zM23 9l-6 6M17 9l6 6"/>
+              </svg>
+            </button>
+            <button id="fullscreenBtn" class="p-1.5 sm:p-2 rounded-xl bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 transition" title="전체 화면 켜기/끄기" aria-label="전체 화면">
+              <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4"/>
+              </svg>
+            </button>
+            <button id="helpBtn" class="p-1.5 sm:p-2 rounded-xl bg-amber-100 hover:bg-amber-200 active:scale-95 text-amber-900 font-bold transition" title="게임 방법" aria-label="게임 방법">
+              <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+            </button>
+            <button id="lobbyBtn" class="p-1.5 sm:p-2 rounded-xl bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 transition" title="로비로 나가기" aria-label="로비로 나가기">
+              <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 아랫줄: 점유율 비교 게이지 바 -->
+      <div class="w-full h-2.5 sm:h-3 bg-stone-200 rounded-full overflow-hidden flex border border-stone-300 relative">
+        <div id="p1Bar" class="h-full bg-gradient-to-r from-blue-600 to-sky-400 transition-all duration-500" style="width: 3.2%"></div>
+        <div class="flex-1"></div>
+        <div id="p2Bar" class="h-full bg-gradient-to-l from-red-600 to-rose-400 transition-all duration-500" style="width: 3.2%"></div>
+        <!-- 50% 기준선 -->
+        <div class="absolute left-1/2 top-0 bottom-0 w-0.5 bg-stone-400/80 -translate-x-1/2"></div>
+      </div>
+    </div>
+
+    <!-- 실시간 30인 모드 HUD -->
+    <div id="rtHudBox" class="hidden bg-[#fcfaf5]/95 backdrop-blur rounded-2xl shadow-lg border-2 border-amber-800/20 px-2.5 sm:px-4 py-1.5 flex items-center justify-between gap-2">
+      <!-- 내 캐릭터 & 점유율 & 순위 -->
+      <div class="flex items-center gap-2 min-w-0">
+        <div id="rtMyAvatarHud" class="w-9 h-9 sm:w-11 sm:h-11 rounded-full bg-white border-2 border-blue-500 shadow-sm flex items-center justify-center overflow-hidden flex-shrink-0"></div>
+        <div class="leading-tight min-w-0">
+          <div class="flex items-center gap-1.5">
+            <span id="rtMyNameHud" class="text-xs sm:text-sm font-black text-slate-800 truncate max-w-[90px] sm:max-w-[130px]">나</span>
+            <span id="rtMyRankBadge" class="px-1.5 py-0.5 rounded-full bg-amber-400 text-amber-950 text-[10px] sm:text-xs font-black whitespace-nowrap">1위</span>
+          </div>
+          <div class="flex items-center gap-2 mt-0.5">
+            <span id="rtMyPercentHud" class="text-xs sm:text-base font-black text-blue-600">0.0%</span>
+            <div id="rtFlickDots" class="flex items-center gap-1" title="귀환까지 남은 튕기기"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 중앙: 남은 경기 시간 & 인원수/맵 크기 -->
+      <div class="flex items-center gap-2 sm:gap-3">
+        <div class="px-3 py-1 rounded-xl bg-slate-900 text-white text-center shadow-sm">
+          <div class="text-[9px] text-amber-300 font-bold leading-none">남은 시간</div>
+          <div id="rtTimerText" class="font-title text-lg sm:text-2xl leading-tight tabular-nums">03:00</div>
+        </div>
+        <div class="hidden sm:flex flex-col text-[11px] font-bold text-slate-600 leading-tight">
+          <span id="rtPlayerCountHud">👥 30명 대전</span>
+          <span id="rtMapSizeHud" class="text-[10px] text-slate-400">맵 380×266</span>
+        </div>
+      </div>
+
+      <!-- 우측: QR 초대 & 카메라 전환 & 유틸 -->
+      <div class="flex items-center gap-1">
+        <button id="rtQrShareBtn" class="px-2 sm:px-2.5 py-1.5 rounded-xl bg-indigo-100 hover:bg-indigo-200 text-indigo-900 text-xs font-black transition flex items-center gap-1" title="QR 코드로 친구 초대">
+          <span>📱</span><span class="hidden md:inline">QR 초대</span>
+        </button>
+        <button id="rtOverviewBtn" class="px-2 sm:px-2.5 py-1.5 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-950 text-xs font-black transition whitespace-nowrap" title="운동장 전체 한눈에 보기 (1.0x)">
+          🗺️ 전체 보기
+        </button>
+        <button id="rtRecenterBtn" class="px-2 sm:px-2.5 py-1.5 rounded-xl bg-emerald-100 hover:bg-emerald-200 text-emerald-900 text-xs font-black transition whitespace-nowrap" title="내 말 중심으로 추적하기">
+          🎯 내 위치
+        </button>
+        <button id="rtLobbyBtn" class="p-1.5 sm:p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 transition" title="로비로 나가기">
+          <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ==================== 메인 운동장 게임 보드 ==================== -->
+  <main id="boardStage" class="flex-1 w-full max-w-[1440px] mx-auto px-2 sm:px-3 py-1 flex items-center justify-center min-h-0 relative overflow-hidden">
+    <div id="boardContainer" class="relative board-frame rounded-xl sm:rounded-2xl overflow-hidden bg-[#d8be96]" style="aspect-ratio: 10 / 7;">
+      <canvas id="gameCanvas"></canvas>
+
+      <!-- 온라인 방 코드 뱃지 -->
+      <div id="roomCodeBadge" class="hidden absolute top-2.5 left-2.5 px-2.5 py-1 rounded-lg bg-white/90 backdrop-blur border border-amber-700/30 shadow text-xs font-bold text-stone-800 pointer-events-none">
+        방 코드: <span id="roomCodeDisplay" class="text-blue-600 tracking-wider font-black">----</span>
+      </div>
+
+      <!-- 실시간 모드: 좌상단 실시간 TOP 5 순위표 (클릭 시 해당 학생 시점 추적) -->
+      <div id="rtLeaderboard" class="hidden absolute top-2.5 left-2.5 z-20 bg-slate-900/80 backdrop-blur-sm text-white rounded-xl px-2.5 py-2 border border-white/15 shadow-lg min-w-[136px] sm:min-w-[162px]">
+        <div class="text-[10px] font-black text-amber-300 tracking-wide mb-1 flex items-center justify-between gap-2">
+          <span>🏆 실시간 TOP 5</span>
+          <span id="rtAliveBadge" class="text-white/70">30명</span>
+        </div>
+        <div id="rtLeaderboardList" class="space-y-0.5 text-[11px] font-bold"></div>
+      </div>
+
+      <!-- 실시간 모드: 우상단 카메라 확대/축소 버튼 -->
+      <div id="rtZoomControls" class="hidden absolute top-2.5 right-2.5 z-20 flex flex-col gap-1">
+        <button id="rtZoomInBtn" class="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-white/90 hover:bg-white active:scale-95 text-slate-800 font-black text-base shadow-md border border-slate-300 flex items-center justify-center" title="화면 확대">＋</button>
+        <button id="rtZoomOutBtn" class="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-white/90 hover:bg-white active:scale-95 text-slate-800 font-black text-base shadow-md border border-slate-300 flex items-center justify-center" title="화면 축소">－</button>
+      </div>
+
+      <!-- 실시간 모드: 우하단 전체 맵 미니맵 (터치/드래그로 시점 이동) -->
+      <div id="minimapWrap" class="hidden absolute bottom-2.5 right-2.5 z-20 rounded-xl overflow-hidden bg-stone-900/85 p-1">
+        <div class="flex items-center justify-between px-1 pb-0.5 text-[9px] font-bold text-amber-200 pointer-events-none">
+          <span>🗺️ 전체 지도 (터치 이동)</span>
+          <span id="minimapZoomLabel">확대 1.5x</span>
+        </div>
+        <canvas id="minimapCanvas" width="190" height="133" class="block w-28 sm:w-44 h-auto rounded-lg bg-[#c5ab82] cursor-pointer touch-none"></canvas>
+      </div>
+
+      <!-- 지형 안내 미니 범례 -->
+      <div class="hidden sm:flex absolute bottom-2 left-2.5 px-2 py-0.5 rounded-md bg-black/45 backdrop-blur-sm text-white/95 text-[10px] font-medium items-center gap-2 pointer-events-none">
+        <span>⛰️ 밝은곳=언덕</span>
+        <span>🕳️ 어두운곳=골짜기/웅덩이</span>
+      </div>
+
+      <!-- 폭탄 조준 모드 배너 -->
+      <div id="bombTargetBanner" class="hidden absolute top-2.5 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-full bg-red-600/95 text-white text-xs sm:text-sm font-black shadow-lg border-2 border-yellow-300 flex items-center gap-2 z-20">
+        <span>💣 폭탄 투하 위치 선택! (취소하려면 폭탄 버튼 다시 터치)</span>
+      </div>
+
+      <!-- 온라인 상대방 턴 대기 배너 -->
+      <div id="waitTurnBanner" class="hidden absolute top-2.5 right-2.5 px-3 py-1 rounded-full bg-slate-900/80 text-white text-xs sm:text-sm font-bold shadow-md pointer-events-none flex items-center gap-1.5">
+        <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+        <span>상대방 차례 진행 중...</span>
+      </div>
+    </div>
+
+    <!-- 중앙 토스트 메시지 -->
+    <div id="toastMsg" class="hidden fixed top-24 left-1/2 -translate-x-1/2 z-40 px-5 py-2.5 rounded-2xl bg-slate-900/92 text-white font-bold text-sm sm:text-base shadow-2xl border border-white/15 whitespace-nowrap pointer-events-none">
+      알림 메시지
+    </div>
+  </main>
+
+  <!-- ==================== 하단 전술 아이템 독 & 상태 안내 ==================== -->
+  <footer class="w-full max-w-[1440px] mx-auto px-2 sm:px-3 pb-1.5 pt-0.5 flex-shrink-0">
+    <div class="bg-[#fcfaf5]/95 backdrop-blur rounded-2xl border-2 border-amber-800/20 px-2.5 sm:px-3.5 py-1 flex flex-col sm:flex-row items-center justify-between gap-1.5 shadow-lg">
+
+      <!-- 아이템 버튼 3종 (현재 턴 플레이어 인벤토리) -->
+      <div id="turnItemDock" class="flex items-center gap-1.5 sm:gap-2 w-full sm:w-auto justify-center">
+        <!-- 1. 파워 업 -->
+        <button id="itemPowerBtn" disabled class="btn-3d relative flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-2.5 sm:px-3.5 py-2 rounded-xl bg-gradient-to-b from-amber-400 to-amber-500 text-amber-950 font-bold text-xs sm:text-sm shadow-[0_3px_0_#b45309] disabled:opacity-40 disabled:grayscale disabled:shadow-none transition">
+          <span class="text-base sm:text-lg leading-none">⚡</span>
+          <span class="whitespace-nowrap">파워 업</span>
+          <span id="itemPowerCount" class="ml-0.5 px-1.5 py-0.2 rounded-full bg-amber-950 text-amber-200 text-[11px] font-black">0</span>
+        </button>
+
+        <!-- 2. 다음 턴 +1 튕기기 -->
+        <button id="itemExtraBtn" disabled class="btn-3d relative flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-2.5 sm:px-3.5 py-2 rounded-xl bg-gradient-to-b from-emerald-400 to-emerald-500 text-emerald-950 font-bold text-xs sm:text-sm shadow-[0_3px_0_#047857] disabled:opacity-40 disabled:grayscale disabled:shadow-none transition">
+          <span class="text-base sm:text-lg leading-none">🪨</span>
+          <span class="whitespace-nowrap">다음턴+1</span>
+          <span id="itemExtraCount" class="ml-0.5 px-1.5 py-0.2 rounded-full bg-emerald-950 text-emerald-200 text-[11px] font-black">0</span>
+        </button>
+
+        <!-- 3. 폭탄 던지기 -->
+        <button id="itemBombBtn" disabled class="btn-3d relative flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-2.5 sm:px-3.5 py-2 rounded-xl bg-gradient-to-b from-rose-500 to-red-600 text-white font-bold text-xs sm:text-sm shadow-[0_3px_0_#991b1b] disabled:opacity-40 disabled:grayscale disabled:shadow-none transition">
+          <span class="text-base sm:text-lg leading-none">💣</span>
+          <span class="whitespace-nowrap">폭탄투하</span>
+          <span id="itemBombCount" class="ml-0.5 px-1.5 py-0.2 rounded-full bg-red-950 text-rose-200 text-[11px] font-black">0</span>
+        </button>
+      </div>
+
+      <!-- 상태 안내 텍스트 -->
+      <div class="flex items-center gap-1.5 min-w-0 flex-1 justify-center sm:justify-end">
+        <span id="statusIcon" class="text-base sm:text-lg flex-shrink-0">🎯</span>
+        <p id="statusText" class="text-[11px] sm:text-xs md:text-sm font-bold text-stone-700 truncate">
+          5초 안에 말을 뒤로 당겨 튕기세요! 지형 경사에 따라 돌이 휘어집니다.
+        </p>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ==================== 모달 1: 로비 / 시작 화면 ==================== -->
+  <div id="lobbyModal" class="fixed inset-0 z-50 bg-slate-950/65 backdrop-blur-sm flex items-center justify-center p-2 sm:p-3 overflow-y-auto">
+    <div class="bg-[#fdfaf2] w-full max-w-xl rounded-3xl shadow-2xl border-4 border-amber-700/40 p-4 sm:p-5 my-auto max-h-[95dvh] overflow-y-auto">
+      <div class="text-center mb-3 relative">
+        <button id="openPageQrBtn" type="button" class="absolute right-0 top-0 px-2.5 py-1.5 rounded-xl bg-indigo-100 hover:bg-indigo-200 text-indigo-900 text-[11px] font-black transition flex items-center gap-1 shadow-sm" title="학생들이 QR로 접속할 수 있게 띄우기">
+          <span>📱</span><span>접속 QR</span>
+        </button>
+        <div class="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-amber-100 border-2 border-amber-400 text-2xl mb-1 shadow-sm">
+          🚩
+        </div>
+        <h1 class="font-title text-2xl sm:text-3xl text-stone-800 tracking-wide">운동장 땅따먹기</h1>
+        <p class="text-[11px] sm:text-xs text-stone-500 font-medium mt-0.5">전통 턴제 1:1 대전 &amp; 최대 30명 실시간 배틀로얄!</p>
+      </div>
+
+      <!-- QR 자동 입장 안내 배너 -->
+      <div id="qrJoinBanner" class="hidden mb-3 px-3 py-2 rounded-2xl bg-indigo-50 border-2 border-indigo-300 text-indigo-900 text-xs font-bold flex items-center justify-between gap-2">
+        <span id="qrJoinBannerText">📱 QR 코드로 방에 연결되었습니다! 별명을 입력하고 참여하세요.</span>
+      </div>
+
+      <!-- 게임 방식 선택 탭 (턴제형 vs 실시간형) -->
+      <div class="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-amber-100/80 border border-amber-300 mb-3">
+        <button type="button" id="tabTurnMode" class="py-2 rounded-xl font-black text-xs sm:text-sm bg-white text-blue-700 shadow-sm border border-blue-200 transition">
+          ♟️ 전통 턴제형 (1:1)
+        </button>
+        <button type="button" id="tabRealtimeMode" class="py-2 rounded-xl font-black text-xs sm:text-sm text-stone-600 hover:text-stone-900 transition">
+          ⚡ 실시간형 (최대 30인!)
+        </button>
+      </div>
+
+      <!-- [패널 A] 전통 턴제형 설정 -->
+      <div id="turnModePanel">
+        <!-- 팀별 별명 & 아바타 선택 -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-3">
+          <!-- 파랑팀(1P) 카드 -->
+          <div class="bg-blue-50/90 rounded-2xl p-3 border-2 border-blue-200">
+            <div class="flex items-center gap-2 mb-2">
+              <div id="p1LobbyPreview" class="w-10 h-10 rounded-full bg-white border-2 border-blue-400 shadow-sm flex items-center justify-center overflow-hidden flex-shrink-0"></div>
+              <div class="flex-1 min-w-0">
+                <label class="block text-[11px] font-black text-blue-900 mb-0.5">파랑팀 별명 (온라인 방장)</label>
+                <input id="p1NicknameInput" type="text" maxlength="8" placeholder="파랑팀" class="w-full px-2.5 py-1.5 rounded-xl border-2 border-blue-200 bg-white text-xs sm:text-sm font-bold focus:outline-none focus:border-blue-500" />
+              </div>
+            </div>
+            <div class="text-[10px] font-bold text-blue-800/80 mb-1">파랑팀 아바타 선택</div>
+            <div id="p1AvatarPicker" class="grid grid-cols-6 gap-1"></div>
+          </div>
+
+          <!-- 빨강팀(2P) 카드 -->
+          <div class="bg-red-50/90 rounded-2xl p-3 border-2 border-red-200">
+            <div class="flex items-center gap-2 mb-2">
+              <div id="p2LobbyPreview" class="w-10 h-10 rounded-full bg-white border-2 border-red-400 shadow-sm flex items-center justify-center overflow-hidden flex-shrink-0"></div>
+              <div class="flex-1 min-w-0">
+                <label class="block text-[11px] font-black text-red-900 mb-0.5">빨강팀 별명 (온라인 참여)</label>
+                <input id="p2NicknameInput" type="text" maxlength="8" placeholder="빨강팀" class="w-full px-2.5 py-1.5 rounded-xl border-2 border-red-200 bg-white text-xs sm:text-sm font-bold focus:outline-none focus:border-red-500" />
+              </div>
+            </div>
+            <div class="text-[10px] font-bold text-red-800/80 mb-1">빨강팀 아바타 선택</div>
+            <div id="p2AvatarPicker" class="grid grid-cols-6 gap-1"></div>
+          </div>
+        </div>
+
+        <!-- 라운드 설정 -->
+        <div class="bg-amber-50/90 rounded-2xl px-3 py-2.5 border border-amber-200 mb-3">
+          <label class="block text-[11px] font-bold text-amber-950 mb-1.5">총 라운드 수 (60% 점유 시 조기 승리)</label>
+          <div class="grid grid-cols-3 gap-2" id="roundSelector">
+            <button type="button" data-rounds="8" class="round-opt py-1.5 rounded-xl text-xs sm:text-sm font-bold border-2 border-amber-200 bg-white text-slate-600 hover:bg-amber-100 transition">8 라운드</button>
+            <button type="button" data-rounds="12" class="round-opt py-1.5 rounded-xl text-xs sm:text-sm font-bold border-2 border-blue-500 bg-blue-50 text-blue-700 shadow-sm transition">12 라운드</button>
+            <button type="button" data-rounds="16" class="round-opt py-1.5 rounded-xl text-xs sm:text-sm font-bold border-2 border-amber-200 bg-white text-slate-600 hover:bg-amber-100 transition">16 라운드</button>
+          </div>
+        </div>
+
+        <!-- 턴제 모드 실행 버튼 -->
+        <div class="space-y-2">
+          <button id="startLocalBtn" class="btn-3d w-full py-3 px-4 rounded-2xl bg-gradient-to-b from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white font-bold text-sm sm:text-base shadow-[0_4px_0_#047857] flex items-center justify-center gap-2">
+            <span class="text-lg">🎡</span>
+            <span>같은 패드 2인 대전 (선후공 룰렛 시작)</span>
+          </button>
+
+          <div class="relative flex items-center py-0.5">
+            <div class="flex-grow border-t border-amber-200"></div>
+            <span class="flex-shrink mx-3 text-[11px] font-bold text-amber-800/70">다른 패드와 온라인 대전</span>
+            <div class="flex-grow border-t border-amber-200"></div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button id="createRoomBtn" class="btn-3d w-full py-2.5 px-3 rounded-2xl bg-gradient-to-b from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-bold text-xs sm:text-sm shadow-[0_4px_0_#1d4ed8] flex items-center justify-center gap-1.5">
+              <span>🌐</span>
+              <span>온라인 방 만들기 (QR)</span>
+            </button>
+
+            <div class="flex gap-1.5">
+              <input id="joinCodeInput" type="tel" maxlength="4" placeholder="4자리 코드" class="w-24 sm:w-28 px-2.5 py-2 rounded-2xl border-2 border-amber-300 bg-white text-center text-sm font-black tracking-widest focus:outline-none focus:border-orange-500" />
+              <button id="joinRoomBtn" class="btn-3d flex-1 py-2 px-3 rounded-2xl bg-gradient-to-b from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white font-bold text-xs sm:text-sm shadow-[0_4px_0_#c2410c]">
+                방 참여
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- [패널 B] 실시간형 (자유 인원 & 컴퓨터 대결 & 관전) 설정 -->
+      <div id="realtimeModePanel" class="hidden">
+        <!-- 내 별명 & 아바타 선택 -->
+        <div class="bg-indigo-50/90 rounded-2xl p-3 border-2 border-indigo-200 mb-2.5">
+          <div class="flex items-center gap-2.5 mb-2">
+            <div id="rtLobbyPreview" class="w-11 h-11 rounded-full bg-white border-2 border-indigo-500 shadow-sm flex items-center justify-center overflow-hidden flex-shrink-0"></div>
+            <div class="flex-1 min-w-0">
+              <label class="block text-[11px] font-black text-indigo-950 mb-0.5">내 별명 (실시간 배틀 참가 이름)</label>
+              <input id="rtNicknameInput" type="text" maxlength="8" placeholder="예: 5반 번개돌" class="w-full px-3 py-1.5 rounded-xl border-2 border-indigo-200 bg-white text-xs sm:text-sm font-bold focus:outline-none focus:border-indigo-500" />
+            </div>
+          </div>
+          <div class="text-[10px] font-bold text-indigo-900/80 mb-1">내 아바타 선택</div>
+          <div id="rtAvatarPicker" class="grid grid-cols-6 gap-1.5"></div>
+        </div>
+
+        <!-- 경기 시간 선택 -->
+        <div class="bg-amber-50/90 rounded-2xl px-3 py-2 border border-amber-200 mb-2.5 flex items-center justify-between gap-2">
+          <span class="text-[11px] font-bold text-amber-950 whitespace-nowrap">⏱️ 경기 시간</span>
+          <div class="grid grid-cols-3 gap-1.5 flex-1 max-w-[240px]" id="rtDurationSelector">
+            <button type="button" data-sec="120" class="rt-dur-opt py-1 rounded-xl text-xs font-bold border-2 border-amber-200 bg-white text-slate-600">2분</button>
+            <button type="button" data-sec="180" class="rt-dur-opt py-1 rounded-xl text-xs font-bold border-2 border-indigo-500 bg-indigo-50 text-indigo-700 shadow-sm">3분</button>
+            <button type="button" data-sec="300" class="rt-dur-opt py-1 rounded-xl text-xs font-bold border-2 border-amber-200 bg-white text-slate-600">5분</button>
+          </div>
+        </div>
+
+        <!-- 모드 1: 컴퓨터(AI)와 대결하기 -->
+        <div class="bg-sky-50/90 rounded-2xl p-3 border-2 border-sky-200 mb-2.5">
+          <div class="flex items-center justify-between mb-1.5">
+            <span class="text-xs font-black text-sky-950">🤖 컴퓨터(AI)와 대결 모드</span>
+            <span id="rtMapPreviewHint" class="text-[10px] font-bold text-sky-700 bg-white/80 px-2 py-0.5 rounded-full border border-sky-200">총 10명 · 맵 270×189</span>
+          </div>
+
+          <!-- AI 인원수 자유 조절 (1 ~ 29명) -->
+          <div class="flex items-center gap-2 mb-2">
+            <span class="text-[11px] font-bold text-slate-600 whitespace-nowrap">컴퓨터 수</span>
+            <button type="button" id="aiCountMinus" class="w-7 h-7 rounded-lg bg-white border border-sky-300 font-black text-sky-800 hover:bg-sky-100 active:scale-95">－</button>
+            <input id="aiCountRange" type="range" min="1" max="29" value="9" class="flex-1 accent-indigo-600 cursor-pointer" />
+            <button type="button" id="aiCountPlus" class="w-7 h-7 rounded-lg bg-white border border-sky-300 font-black text-sky-800 hover:bg-sky-100 active:scale-95">＋</button>
+            <span id="aiCountLabel" class="w-11 text-right text-xs font-black text-indigo-700 tabular-nums">9명</span>
+          </div>
+
+          <!-- 난이도 3단계 선택 -->
+          <div class="flex items-center gap-2 mb-2.5">
+            <span class="text-[11px] font-bold text-slate-600 whitespace-nowrap">AI 난이도</span>
+            <div class="grid grid-cols-3 gap-1.5 flex-1" id="aiDifficultySelector">
+              <button type="button" data-diff="easy" class="ai-diff-opt py-1.5 rounded-xl text-xs font-bold border-2 border-sky-200 bg-white text-slate-600">🌱 쉬움</button>
+              <button type="button" data-diff="normal" class="ai-diff-opt py-1.5 rounded-xl text-xs font-bold border-2 border-indigo-500 bg-indigo-50 text-indigo-700 shadow-sm">🔥 보통</button>
+              <button type="button" data-diff="hard" class="ai-diff-opt py-1.5 rounded-xl text-xs font-bold border-2 border-sky-200 bg-white text-slate-600">👑 어려움</button>
+            </div>
+          </div>
+
+          <div class="flex gap-2">
+            <button id="startRealtimeSoloBtn" class="btn-3d flex-1 py-2.5 px-3 rounded-2xl bg-gradient-to-b from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-white font-bold text-xs sm:text-sm shadow-[0_4px_0_#3730a3] flex items-center justify-center gap-1.5">
+              <span class="text-base">🤖</span>
+              <span>컴퓨터 9명과 대결 시작!</span>
+            </button>
+            <button id="watchAiBattleBtn" type="button" class="btn-3d px-3 py-2.5 rounded-2xl bg-gradient-to-b from-slate-600 to-slate-700 hover:from-slate-700 hover:to-slate-800 text-white font-bold text-xs sm:text-sm shadow-[0_4px_0_#1e293b] whitespace-nowrap" title="플레이어에 포함되지 않고 AI들끼리의 대결을 관전합니다">
+              👁️ 관전만 하기
+            </button>
+          </div>
+        </div>
+
+        <!-- 모드 2: 학급 QR 실시간 방 (들어온 학생 수에 맞춰 맵 자동 조절) -->
+        <div class="bg-emerald-50/90 rounded-2xl p-3 border-2 border-emerald-200">
+          <div class="flex items-center justify-between mb-1.5">
+            <span class="text-xs font-black text-emerald-950">📱 학급 QR 실시간 대전</span>
+            <span class="text-[10px] font-bold text-emerald-700">입장 인원 따라 맵 자동 확장 (최대 30명)</span>
+          </div>
+
+          <!-- 선생님 관전자 전용 체크박스 -->
+          <label class="flex items-center gap-2 mb-2 px-2.5 py-1.5 rounded-xl bg-white/85 border border-emerald-200 cursor-pointer select-none">
+            <input id="hostSpectatorCheck" type="checkbox" checked class="w-4 h-4 accent-emerald-600 rounded cursor-pointer" />
+            <span class="text-[11px] font-bold text-emerald-950">👁️ 선생님 관전자 전용으로 방 열기 <span class="text-emerald-700 font-medium">(플레이어 인원 제외)</span></span>
+          </label>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button id="createRtRoomBtn" class="btn-3d w-full py-2.5 px-3 rounded-2xl bg-gradient-to-b from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white font-bold text-xs sm:text-sm shadow-[0_4px_0_#047857] flex items-center justify-center gap-1.5">
+              <span>📱</span>
+              <span>학급 QR 방 만들기</span>
+            </button>
+
+            <div class="flex gap-1.5">
+              <input id="joinRtCodeInput" type="tel" maxlength="4" placeholder="방 코드" class="w-20 sm:w-24 px-2 py-2 rounded-2xl border-2 border-emerald-300 bg-white text-center text-sm font-black tracking-widest focus:outline-none focus:border-emerald-500" />
+              <button id="joinRtRoomBtn" class="btn-3d flex-1 py-2 px-2.5 rounded-2xl bg-gradient-to-b from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white font-bold text-xs shadow-[0_4px_0_#c2410c] whitespace-nowrap">
+                참여
+              </button>
+              <button id="spectateRtRoomBtn" type="button" class="btn-3d px-2.5 py-2 rounded-2xl bg-gradient-to-b from-slate-600 to-slate-700 hover:from-slate-700 hover:to-slate-800 text-white font-bold text-xs shadow-[0_4px_0_#1e293b] whitespace-nowrap" title="플레이어에 포함되지 않고 관전자 전용으로 입장">
+                👁️ 관전
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-3 text-center">
+        <button id="lobbyHelpBtn" class="text-xs font-bold text-amber-800 hover:text-amber-950 underline underline-offset-4">
+          📖 지형 · 장애물 · 아이템 · 실시간 30인 규칙 보기
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 모달 6: QR 코드 초대 / 접속 모달 ==================== -->
+  <div id="qrModal" class="hidden fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-sm rounded-3xl shadow-2xl border-4 border-indigo-400 p-5 sm:p-6 text-center">
+      <div class="flex items-center justify-between mb-2">
+        <span class="px-2.5 py-1 rounded-full bg-indigo-100 text-indigo-800 text-xs font-black">📱 태블릿 카메라로 스캔</span>
+        <button id="closeQrModalBtn" class="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 font-bold text-slate-600">✕</button>
+      </div>
+      <h2 id="qrModalTitle" class="font-title text-2xl text-slate-800 mb-1">QR 코드로 바로 입장!</h2>
+      <p id="qrModalDesc" class="text-xs text-slate-500 mb-3">아이들이 패드 카메라로 찍으면 바로 게임 페이지로 들어옵니다.</p>
+
+      <div class="inline-flex items-center justify-center p-3 bg-white rounded-2xl border-2 border-indigo-200 shadow-inner mb-3">
+        <div id="qrCodeContainer" class="w-[180px] h-[180px] flex items-center justify-center"></div>
+      </div>
+
+      <div id="qrRoomCodeBox" class="hidden bg-indigo-50 border-2 border-dashed border-indigo-300 rounded-2xl py-2 px-3 mb-3">
+        <div class="text-[10px] font-bold text-indigo-700">방 코드 (직접 입력 시)</div>
+        <div id="qrRoomCodeText" class="font-title text-3xl tracking-[0.25em] text-indigo-700 pl-1">----</div>
+        <div id="qrJoinedCountText" class="text-xs font-bold text-emerald-700 mt-0.5"></div>
+        <div id="qrJoinedList" class="hidden flex flex-wrap justify-center gap-1 mt-1.5 max-h-20 overflow-y-auto"></div>
+      </div>
+
+      <div class="flex gap-2">
+        <button id="copyQrLinkBtn" class="btn-3d flex-1 py-2.5 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white font-bold text-xs sm:text-sm shadow-[0_3px_0_#3730a3]">
+          🔗 접속 링크 복사
+        </button>
+        <button id="qrStartRtNowBtn" class="hidden btn-3d flex-1 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-xs sm:text-sm shadow-[0_3px_0_#047857]">
+          🚀 지금 시작!
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 모달 2: 선후공 결정 룰렛 ==================== -->
+  <div id="rouletteModal" class="hidden fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-[#fdfaf2] w-full max-w-md rounded-3xl shadow-2xl border-4 border-amber-400 p-5 sm:p-6 text-center">
+      <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-100 border border-amber-300 text-amber-900 text-xs font-black mb-2">
+        <span>🎡</span>
+        <span>누가 먼저 튕길까요?</span>
+      </div>
+      <h2 class="font-title text-2xl sm:text-3xl text-stone-800 mb-3">선후공 결정 룰렛!</h2>
+
+      <!-- 참가 팀 배너 -->
+      <div class="flex items-center justify-between gap-2 mb-4 px-2">
+        <div class="flex items-center gap-2 bg-blue-50 border-2 border-blue-200 rounded-2xl px-2.5 py-1.5 flex-1 min-w-0">
+          <div id="rouletteP1Avatar" class="w-9 h-9 rounded-full bg-white border-2 border-blue-400 flex-shrink-0 overflow-hidden"></div>
+          <span id="rouletteP1Name" class="text-xs sm:text-sm font-black text-blue-900 truncate">파랑팀</span>
+        </div>
+        <span class="font-title text-lg text-amber-600">VS</span>
+        <div class="flex items-center justify-end gap-2 bg-red-50 border-2 border-red-200 rounded-2xl px-2.5 py-1.5 flex-1 min-w-0">
+          <span id="rouletteP2Name" class="text-xs sm:text-sm font-black text-red-900 truncate">빨강팀</span>
+          <div id="rouletteP2Avatar" class="w-9 h-9 rounded-full bg-white border-2 border-red-400 flex-shrink-0 overflow-hidden"></div>
+        </div>
+      </div>
+
+      <!-- 룰렛 원판 영역 -->
+      <div class="relative w-56 h-56 sm:w-64 sm:h-64 mx-auto mb-4 flex items-center justify-center">
+        <!-- 상단 고정 화살표 핀 -->
+        <div class="absolute -top-3 left-1/2 -translate-x-1/2 z-20 drop-shadow-md">
+          <svg width="32" height="36" viewBox="0 0 32 36">
+            <polygon points="16,34 4,6 28,6" fill="#facc15" stroke="#92400e" stroke-width="3" stroke-linejoin="round"/>
+            <circle cx="16" cy="10" r="4" fill="#ffffff"/>
+          </svg>
+        </div>
+
+        <!-- 회전하는 6분할 SVG 룰렛 -->
+        <div id="rouletteWheel" class="w-full h-full rounded-full shadow-xl border-4 border-amber-700 overflow-hidden bg-white">
+          <svg id="rouletteSvg" viewBox="0 0 200 200" class="w-full h-full"></svg>
+        </div>
+
+        <!-- 중앙 고정 캡 -->
+        <div class="absolute w-12 h-12 rounded-full bg-gradient-to-b from-amber-300 to-amber-500 border-4 border-white shadow-lg flex items-center justify-center font-title text-sm text-amber-950 z-10 pointer-events-none">
+          GO!
+        </div>
+      </div>
+
+      <!-- 결과 안내 텍스트 -->
+      <div id="rouletteResultBox" class="min-h-[44px] flex items-center justify-center mb-3">
+        <p id="rouletteStatusText" class="text-sm font-bold text-stone-600">
+          버튼을 눌러 선공 팀을 정해보세요!
+        </p>
+      </div>
+
+      <!-- 룰렛 실행 / 게임 시작 버튼 -->
+      <button id="spinRouletteBtn" class="btn-3d w-full py-3.5 rounded-2xl bg-gradient-to-b from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 text-amber-950 font-black text-base shadow-[0_4px_0_#b45309]">
+        🎯 룰렛 돌리기!
+      </button>
+      <button id="startAfterRouletteBtn" class="hidden btn-3d w-full py-3.5 rounded-2xl bg-gradient-to-b from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white font-black text-base shadow-[0_4px_0_#047857]">
+        🚀 경기 시작하기!
+      </button>
+    </div>
+  </div>
+
+  <!-- ==================== 모달 3: 온라인 대기실 ==================== -->
+  <div id="waitingModal" class="hidden fixed inset-0 z-50 bg-slate-950/65 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-sm rounded-3xl shadow-2xl border-4 border-blue-400 p-6 text-center">
+      <div class="text-4xl mb-2">📡</div>
+      <h2 class="font-title text-2xl text-slate-800 mb-1">친구를 기다리는 중...</h2>
+      <p class="text-xs sm:text-sm text-slate-500 mb-4">친구 패드에서 아래 4자리 방 코드를 입력하세요!</p>
+
+      <div class="bg-blue-50 border-2 border-dashed border-blue-300 rounded-2xl py-4 px-3 mb-4">
+        <div id="waitingRoomCode" class="font-title text-5xl tracking-[0.25em] text-blue-600 pl-2">1234</div>
+      </div>
+
+      <!-- 대기실 QR 코드 -->
+      <div class="flex flex-col items-center mb-4">
+        <div id="waitingQrBox" class="p-2 bg-white rounded-xl border border-blue-200 shadow-sm"></div>
+        <span class="text-[11px] font-bold text-blue-700 mt-1">📱 친구 패드로 이 QR을 찍으면 자동 입장!</span>
+      </div>
+
+      <div class="flex gap-2">
+        <button id="copyCodeBtn" class="btn-3d flex-1 py-2.5 rounded-xl bg-blue-500 hover:bg-blue-600 text-white font-bold text-sm shadow-[0_3px_0_#1d4ed8]">
+          📋 코드 복사
+        </button>
+        <button id="cancelWaitBtn" class="btn-3d px-4 py-2.5 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-sm shadow-[0_3px_0_#94a3b8]">
+          취소
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 모달 4: 게임 방법 안내 ==================== -->
+  <div id="helpModal" class="hidden fixed inset-0 z-50 bg-slate-950/65 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl border-4 border-amber-400 p-5 sm:p-6 max-h-[90dvh] overflow-y-auto">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="font-title text-2xl text-amber-950">🚩 운동장 땅따먹기 가이드</h2>
+        <button id="closeHelpBtn" class="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center font-bold text-slate-600">✕</button>
+      </div>
+
+      <div class="space-y-2.5 text-xs sm:text-sm text-slate-700 leading-relaxed">
+        <div class="flex gap-3 bg-blue-50 p-3 rounded-2xl border border-blue-100">
+          <div class="text-2xl flex-shrink-0">🔄</div>
+          <div>
+            <div class="font-bold text-blue-900">1. 전통 3번 튕기기 규칙</div>
+            <p class="text-slate-600">차례가 시작되면 <b>내 땅 안을 터치</b>해 출발 위치를 정하고, 말을 뒤로 당겨 튕기세요. 밖으로 나갔다가 <b>3번 이내에 내 땅으로 돌아오면</b> 둘러싼 땅(상대 땅 포함)을 차지합니다!</p>
+          </div>
+        </div>
+
+        <div class="flex gap-3 bg-amber-50 p-3 rounded-2xl border border-amber-200">
+          <div class="text-2xl flex-shrink-0">⛰️</div>
+          <div>
+            <div class="font-bold text-amber-950">2. 지형 높낮이 &amp; 랜덤 구조물 &amp; 상대 땅 저항</div>
+            <p class="text-slate-600">운동장에는 <b>언덕(밝은 곳)</b>과 <b>골짜기(어두운 곳)</b>가 있어 돌이 경사를 따라 휘어집니다. 바위·통나무·벽돌에 부딪히면 튕겨 나가며, <b>상대의 땅에 들어가면 모래 저항으로 돌이 느려지고 튕기는 힘도 약해집니다!</b></p>
+          </div>
+        </div>
+
+        <div class="flex gap-3 bg-emerald-50 p-3 rounded-2xl border border-emerald-200">
+          <div class="text-2xl flex-shrink-0">🎁</div>
+          <div>
+            <div class="font-bold text-emerald-950">3. 전술 아이템 3종 (돌로 지나가서 획득!)</div>
+            <ul class="list-disc pl-4 text-slate-600 space-y-0.5 mt-0.5">
+              <li><b>⚡ 파워 업:</b> 다음 1회 튕기기 최대 파워가 1.55배 강력해집니다.</li>
+              <li><b>🪨 다음 턴 +1:</b> 다음 내 턴에 튕기기 횟수가 4번으로 늘어납니다.</li>
+              <li><b>💣 폭탄 투하:</b> 원하는 곳에 폭탄을 던져 땅을 <b>주인 없는 땅</b>으로 만들고 깊은 웅덩이(크레이터)를 팝니다!</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="flex gap-3 bg-red-50 p-3 rounded-2xl border border-red-200">
+          <div class="text-2xl flex-shrink-0">⏱️</div>
+          <div>
+            <div class="font-bold text-red-900">4. 돌 던지기 5초 초시계!</div>
+            <p class="text-slate-600">매 튕기기마다 <b>5초 제한시간</b>이 흐릅니다. 5초 안에 말을 튕기지 못하면 시간 초과로 턴이 넘어갑니다! (폭탄 조준 중에는 일시정지)</p>
+          </div>
+        </div>
+
+        <div class="flex gap-3 bg-indigo-50 p-3 rounded-2xl border border-indigo-200">
+          <div class="text-2xl flex-shrink-0">⚡</div>
+          <div>
+            <div class="font-bold text-indigo-900">5. 실시간 배틀 모드 (최대 30명)</div>
+            <p class="text-slate-600">턴 대기 없이 모두가 동시에 말을 튕깁니다! 인원수에 따라 운동장이 넓어지고, 내 화면은 <b>내 땅 중심으로 적당히 확대</b>되어 보입니다. 우측 하단 <b>전체 미니맵</b>으로 점령 현황을 확인하며, <b>먼저 땅을 차지해 상대의 이동 선을 덮으면 상대의 선이 사라집니다!</b></p>
+          </div>
+        </div>
+      </div>
+
+      <button id="confirmHelpBtn" class="btn-3d mt-4 w-full py-3 rounded-2xl bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold text-base shadow-[0_4px_0_#d97706]">
+        알겠어요! 게임 계속하기
+      </button>
+    </div>
+  </div>
+
+  <!-- ==================== 모달 5: 게임 종료 결과 ==================== -->
+  <div id="resultModal" class="hidden fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-sm rounded-3xl shadow-2xl border-4 border-amber-400 p-6 text-center">
+      <div id="resultTrophy" class="text-5xl mb-2">🏆</div>
+      <h2 id="resultTitle" class="font-title text-3xl text-slate-800 mb-1">파랑팀 승리!</h2>
+      <p id="resultReason" class="text-xs sm:text-sm text-slate-500 font-medium mb-4">모든 라운드가 종료되었습니다.</p>
+
+      <!-- 턴제 1:1 결과 카드 -->
+      <div id="turnResultCards" class="grid grid-cols-2 gap-3 mb-5">
+        <div class="bg-blue-50 border-2 border-blue-200 rounded-2xl p-3 flex flex-col items-center">
+          <div id="resP1Avatar" class="w-14 h-14 rounded-full bg-white border-2 border-blue-400 shadow-sm mb-1.5 overflow-hidden"></div>
+          <div id="resP1Name" class="text-xs font-bold text-blue-900 truncate max-w-full">파랑팀</div>
+          <div id="resP1Score" class="font-title text-2xl text-blue-600 mt-0.5">42.5%</div>
+        </div>
+        <div class="bg-red-50 border-2 border-red-200 rounded-2xl p-3 flex flex-col items-center">
+          <div id="resP2Avatar" class="w-14 h-14 rounded-full bg-white border-2 border-red-400 shadow-sm mb-1.5 overflow-hidden"></div>
+          <div id="resP2Name" class="text-xs font-bold text-red-900 truncate max-w-full">빨강팀</div>
+          <div id="resP2Score" class="font-title text-2xl text-red-600 mt-0.5">31.0%</div>
+        </div>
+      </div>
+
+      <!-- 실시간 30인 순위표 결과 -->
+      <div id="rtResultList" class="hidden bg-indigo-50/80 border-2 border-indigo-200 rounded-2xl p-3 mb-5 text-left space-y-1.5 max-h-52 overflow-y-auto"></div>
+
+      <div class="flex gap-2.5">
+        <button id="rematchBtn" class="btn-3d flex-1 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-sm sm:text-base shadow-[0_4px_0_#047857]">
+          🔄 새 지형으로 다시 하기
+        </button>
+        <button id="resultLobbyBtn" class="btn-3d px-4 py-3 rounded-2xl bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-sm sm:text-base shadow-[0_4px_0_#94a3b8]">
+          로비
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 게임 핵심 스크립트 ==================== -->
+  <script type="module">
+    // =========================================================================
+    // 1. Firebase 초기화 (온라인 대전을 쓸 때만 MANUAL_FIREBASE_CONFIG에 키 입력)
+    //    설정이 없거나 오프라인이어도 로컬 2인 대전은 100% 독립 작동합니다.
+    // =========================================================================
+    const MANUAL_FIREBASE_CONFIG = null;
+    /* 예시:
+    const MANUAL_FIREBASE_CONFIG = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT.firebaseapp.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT.appspot.com",
+      messagingSenderId: "YOUR_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+    */
+
+    let db = null;
+    let auth = null;
+    let fbFirestore = null;
+    let currentUser = null;
+    let firebaseReady = false;
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'playground-land-grab-v2';
+
+    async function initFirebase() {
+      try {
+        let firebaseConfig = MANUAL_FIREBASE_CONFIG;
+        if (!firebaseConfig && typeof __firebase_config !== 'undefined' && __firebase_config) {
+          firebaseConfig = typeof __firebase_config === 'string'
+            ? JSON.parse(__firebase_config)
+            : __firebase_config;
+        }
+        if (!firebaseConfig) return;
+
+        const [appMod, authMod, fsMod] = await Promise.all([
+          import("https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js"),
+          import("https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js"),
+          import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js")
+        ]);
+        fbFirestore = fsMod;
+        const app = appMod.initializeApp(firebaseConfig);
+        auth = authMod.getAuth(app);
+        db = fsMod.getFirestore(app);
+
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          const cred = await authMod.signInWithCustomToken(auth, __initial_auth_token);
+          currentUser = cred.user;
+        } else {
+          const cred = await authMod.signInAnonymously(auth);
+          currentUser = cred.user;
+        }
+        firebaseReady = true;
+      } catch (err) {
+        console.warn("Firebase 연결 생략 (로컬 모드 정상 작동):", err);
+        firebaseReady = false;
+      }
+    }
+
+    // =========================================================================
+    // 2. 시드 기반 의사 난수 생성기 (Mulberry32 - 온라인 지형/장애물 동기화)
+    // =========================================================================
+    function createRNG(seed) {
+      let a = (seed >>> 0) || 1;
+      return function () {
+        a |= 0;
+        a = (a + 0x6D2B79F5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    // =========================================================================
+    // 3. Web Audio API 프로시저럴 사운드 효과 & 다중 곡 로테이션 BGM
+    // =========================================================================
+    const SoundFX = {
+      ctx: null,
+      muted: false,
+      lastClackTime: 0,
+      lastRollTime: 0,
+
+      ensure() {
+        if (this.muted) return null;
+        if (!this.ctx) {
+          const AC = window.AudioContext || window.webkitAudioContext;
+          if (AC) this.ctx = new AC();
+        }
+        if (this.ctx && this.ctx.state === 'suspended') {
+          this.ctx.resume().catch(() => {});
+        }
+        return this.ctx;
+      },
+
+      // UI 버튼 클릭음
+      playClick() {
+        const ctx = this.ensure();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(660, now);
+        osc.frequency.exponentialRampToValueAtTime(420, now + 0.045);
+        gain.gain.setValueAtTime(0.11, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(now); osc.stop(now + 0.055);
+      },
+
+      // 룰렛 회전 틱 효과음
+      playRouletteTick(pitch = 1.0) {
+        const ctx = this.ensure();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(520 * pitch, now);
+        osc.frequency.exponentialRampToValueAtTime(240, now + 0.035);
+        gain.gain.setValueAtTime(0.14, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(now); osc.stop(now + 0.045);
+      },
+
+      // 턴 전환 부드러운 종소리
+      playTurnChange() {
+        const ctx = this.ensure();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        [523.25, 659.25].forEach((freq, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, now + i * 0.07);
+          gain.gain.setValueAtTime(0.08, now + i * 0.07);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.07 + 0.16);
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.start(now + i * 0.07); osc.stop(now + i * 0.07 + 0.17);
+        });
+      },
+
+      // 돌 튕기기 효과음
+      playFlick(powerRatio = 0.5, isPowerUp = false) {
+        const ctx = this.ensure();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = isPowerUp ? 'sawtooth' : 'triangle';
+        const baseFreq = isPowerUp ? 220 : 170;
+        osc.frequency.setValueAtTime(baseFreq + powerRatio * 240, now);
+        osc.frequency.exponentialRampToValueAtTime(65, now + 0.14);
+        gain.gain.setValueAtTime(0.18 + powerRatio * 0.14, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(now); osc.stop(now + 0.16);
+      },
+
+      // 장애물 충돌 효과음
+      playClack(material = 'rock', intensity = 0.6) {
+        const ctx = this.ensure();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        if (now - this.lastClackTime < 0.05) return;
+        this.lastClackTime = now;
+
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = material === 'wood' ? 'triangle' : 'square';
+        const f = material === 'wood' ? 280 : 480;
+        osc.frequency.setValueAtTime(f + Math.random() * 60, now);
+        osc.frequency.exponentialRampToValueAtTime(90, now + 0.06);
+        const vol = Math.min(0.24, 0.06 + intensity * 0.16);
+        gain.gain.setValueAtTime(vol, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.065);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(now); osc.stop(now + 0.07);
+      },
+
+      // 모래 위를 굴러가는 마찰음
+      playSandSlide(intensity = 0.5) {
+        const ctx = this.ensure();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        if (now - this.lastRollTime < 0.09) return;
+        this.lastRollTime = now;
+
+        const bufLen = Math.floor(ctx.sampleRate * 0.05);
+        const buf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+        const ch = buf.getChannelData(0);
+        for (let i = 0; i < bufLen; i++) ch[i] = (Math.random() * 2 - 1) * 0.35;
+
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(1400, now);
+
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(Math.min(0.06, 0.015 + intensity * 0.045), now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+
+        src.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
+        src.start(now);
+      },
+
+      // 아이템 획득 / 장착 효과음
+      playPickup() {
+        const ctx = this.ensure();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        [587.33, 880, 1174.66].forEach((freq, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, now + i * 0.055);
+          gain.gain.setValueAtTime(0.13, now + i * 0.055);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.055 + 0.14);
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.start(now + i * 0.055); osc.stop(now + i * 0.055 + 0.15);
+        });
+      },
+
+      // 폭탄 투하 휘파람음
+      playBombWhistle() {
+        const ctx = this.ensure();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(860, now);
+        osc.frequency.exponentialRampToValueAtTime(240, now + 0.52);
+        gain.gain.setValueAtTime(0.12, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(now); osc.stop(now + 0.56);
+      },
+
+      // 폭탄 폭발음
+      playExplosion() {
+        const ctx = this.ensure();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        const bufLen = Math.floor(ctx.sampleRate * 0.48);
+        const buf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+        const ch = buf.getChannelData(0);
+        for (let i = 0; i < bufLen; i++) {
+          ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufLen, 1.8);
+        }
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(480, now);
+        filter.frequency.exponentialRampToValueAtTime(80, now + 0.45);
+
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.36, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.48);
+
+        src.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
+        src.start(now);
+      },
+
+      // 땅 획득 성공 팡파레
+      playCapture() {
+        const ctx = this.ensure();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(freq, now + i * 0.065);
+          gain.gain.setValueAtTime(0.14, now + i * 0.065);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.065 + 0.22);
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.start(now + i * 0.065); osc.stop(now + i * 0.065 + 0.24);
+        });
+      },
+
+      // 실패 / 아웃 효과음
+      playFail() {
+        const ctx = this.ensure();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        [320, 230].forEach((freq, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(freq, now + i * 0.11);
+          gain.gain.setValueAtTime(0.1, now + i * 0.11);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.11 + 0.16);
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.start(now + i * 0.11); osc.stop(now + i * 0.11 + 0.17);
+        });
+      },
+
+      // 말 위치 배치음
+      playPlace() {
+        const ctx = this.ensure();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(440, now);
+        osc.frequency.exponentialRampToValueAtTime(620, now + 0.06);
+        gain.gain.setValueAtTime(0.11, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.07);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(now); osc.stop(now + 0.08);
+      },
+
+      // 5초 초시계 경고 틱
+      playTick(urgent = false) {
+        const ctx = this.ensure();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(urgent ? 980 : 720, now);
+        gain.gain.setValueAtTime(urgent ? 0.12 : 0.08, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(now); osc.stop(now + 0.055);
+      },
+
+      // 시간 초과 부저음
+      playBuzzer() {
+        const ctx = this.ensure();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(160, now);
+        osc.frequency.linearRampToValueAtTime(115, now + 0.32);
+        gain.gain.setValueAtTime(0.15, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.34);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(now); osc.stop(now + 0.35);
+      },
+
+      // 최종 승리 팡파레
+      playWin() {
+        const ctx = this.ensure();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        [523.25, 659.25, 783.99, 1046.5, 783.99, 1046.5].forEach((freq, i) => {
+          const t = now + i * 0.1;
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(freq, t);
+          gain.gain.setValueAtTime(0.15, t);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.start(t); osc.stop(t + 0.26);
+        });
+      }
+    };
+
+    // 다중 곡 로테이션 배경음악 플레이어 (4곡 자동 순환)
+    const BGMPlayer = {
+      enabled: true,
+      playing: false,
+      timerId: null,
+      trackIndex: 0,
+      stepIndex: 0,
+      loopCount: 0,
+      tracks: [
+        {
+          name: '운동장 행진곡',
+          tempo: 195,
+          melody: [523, 659, 784, 659, 880, 784, 659, 587, 523, 587, 659, 784, 659, 587, 523, 0],
+          bass:   [262, 0,   196, 0,   220, 0,   196, 0,   175, 0,   196, 0,   262, 0,   196, 0]
+        },
+        {
+          name: '쉬는시간 피크닉',
+          tempo: 215,
+          melody: [659, 784, 880, 784, 659, 587, 523, 0,   587, 659, 784, 659, 587, 523, 440, 0],
+          bass:   [220, 0,   262, 0,   196, 0,   262, 0,   175, 0,   196, 0,   220, 0,   196, 0]
+        },
+        {
+          name: '방과후 술래잡기',
+          tempo: 175,
+          melody: [587, 659, 784, 880, 784, 659, 587, 659, 784, 880, 1046, 880, 784, 659, 587, 0],
+          bass:   [294, 0,   220, 0,   247, 0,   220, 0,   196, 0,   220,  0,   294, 0,   220, 0]
+        },
+        {
+          name: '노을빛 땅따먹기',
+          tempo: 235,
+          melody: [523, 0,   659, 587, 523, 440, 392, 0,   440, 523, 659, 587, 523, 440, 523, 0],
+          bass:   [175, 0,   196, 0,   220, 0,   196, 0,   175, 0,   196, 0,   262, 0,   196, 0]
+        }
+      ],
+
+      updateLabel() {
+        const el = document.getElementById('bgmTrackLabel');
+        if (el) el.textContent = this.tracks[this.trackIndex].name;
+      },
+
+      start() {
+        if (!this.enabled || SoundFX.muted || this.playing) return;
+        const ctx = SoundFX.ensure();
+        if (!ctx) return;
+        this.playing = true;
+        this.updateLabel();
+        this.scheduleStep();
+      },
+
+      stop() {
+        this.playing = false;
+        if (this.timerId) {
+          clearTimeout(this.timerId);
+          this.timerId = null;
+        }
+      },
+
+      nextTrack(showNotice = false) {
+        this.trackIndex = (this.trackIndex + 1) % this.tracks.length;
+        this.stepIndex = 0;
+        this.loopCount = 0;
+        this.updateLabel();
+        if (showNotice) showToast(`🎵 BGM: ${this.tracks[this.trackIndex].name}`);
+        if (!this.playing && !SoundFX.muted && this.enabled) {
+          this.start();
+        }
+      },
+
+      scheduleStep() {
+        if (!this.playing || SoundFX.muted || !this.enabled) return;
+        const ctx = SoundFX.ensure();
+        if (!ctx) return;
+
+        const track = this.tracks[this.trackIndex];
+        const now = ctx.currentTime;
+        const mel = track.melody[this.stepIndex];
+        const bas = track.bass[this.stepIndex];
+
+        if (mel > 0) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(mel, now);
+          gain.gain.setValueAtTime(0.036, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + (track.tempo / 1000) * 0.9);
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.start(now); osc.stop(now + track.tempo / 1000);
+        }
+
+        if (bas > 0) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(bas, now);
+          gain.gain.setValueAtTime(0.032, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + (track.tempo / 1000) * 1.1);
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.start(now); osc.stop(now + (track.tempo / 1000) * 1.15);
+        }
+
+        this.stepIndex++;
+        if (this.stepIndex >= track.melody.length) {
+          this.stepIndex = 0;
+          this.loopCount++;
+          if (this.loopCount >= 2) {
+            this.loopCount = 0;
+            this.trackIndex = (this.trackIndex + 1) % this.tracks.length;
+            this.updateLabel();
+          }
+        }
+
+        this.timerId = setTimeout(() => this.scheduleStep(), track.tempo);
+      }
+    };
+
+    // =========================================================================
+    // 3-B. 캐릭터 아바타 카탈로그 & 상황별 동적 표정 SVG 렌더러
+    // =========================================================================
+    const AVATAR_CATALOG = [
+      { id: 'dog',    name: '강아지', base: '#f5cfa0', accent: '#c98a4b', ear: '#b06d32', innerEar: '#f9d8b6' },
+      { id: 'cat',    name: '고양이', base: '#fed7aa', accent: '#f97316', ear: '#fb923c', innerEar: '#fecdd3' },
+      { id: 'rabbit', name: '토끼',   base: '#f8fafc', accent: '#e2e8f0', ear: '#f1f5f9', innerEar: '#fda4af' },
+      { id: 'bear',   name: '곰돌이', base: '#b07b4f', accent: '#7c4f2b', ear: '#8c5a32', innerEar: '#e8c49a' },
+      { id: 'fox',    name: '여우',   base: '#fb923c', accent: '#fff7ed', ear: '#ea580c', innerEar: '#431407' },
+      { id: 'panda',  name: '판다',   base: '#ffffff', accent: '#1e293b', ear: '#1e293b', innerEar: '#475569' }
+    ];
+
+    const MOOD_LABELS = {
+      normal:  { text: '평온',   cls: 'bg-slate-100 text-slate-700' },
+      happy:   { text: '신남!',  cls: 'bg-emerald-100 text-emerald-700' },
+      smug:    { text: '우세😎', cls: 'bg-amber-100 text-amber-800' },
+      focused: { text: '집중🔥', cls: 'bg-orange-100 text-orange-700' },
+      nervous: { text: '긴장💦', cls: 'bg-sky-100 text-sky-700' },
+      shock:   { text: '충격😱', cls: 'bg-rose-100 text-rose-700' },
+      sad:     { text: '위기😢', cls: 'bg-indigo-100 text-indigo-700' }
+    };
+
+    // 캐릭터 ID + 표정(mood) + 팀번호(1/2)에 맞춰 생생한 SVG 아바타 생성
+    function renderAvatarSVG(charId, mood = 'normal', teamNum = 1) {
+      const c = AVATAR_CATALOG.find(a => a.id === charId) || AVATAR_CATALOG[0];
+      const bgGrad = teamNum === 1 ? '#dbeafe' : '#fee2e2';
+
+      // 1) 귀 & 머리 실루엣
+      let ears = '';
+      if (c.id === 'dog') {
+        ears = `
+          <ellipse cx="18" cy="54" rx="11" ry="20" transform="rotate(14 18 54)" fill="${c.ear}" stroke="#3f2a1d" stroke-width="2.5"/>
+          <ellipse cx="82" cy="54" rx="11" ry="20" transform="rotate(-14 82 54)" fill="${c.ear}" stroke="#3f2a1d" stroke-width="2.5"/>
+        `;
+      } else if (c.id === 'cat' || c.id === 'fox') {
+        ears = `
+          <polygon points="18,44 22,12 45,28" fill="${c.ear}" stroke="#3f2a1d" stroke-width="2.5" stroke-linejoin="round"/>
+          <polygon points="23,38 25,19 40,29" fill="${c.innerEar}"/>
+          <polygon points="82,44 78,12 55,28" fill="${c.ear}" stroke="#3f2a1d" stroke-width="2.5" stroke-linejoin="round"/>
+          <polygon points="77,38 75,19 60,29" fill="${c.innerEar}"/>
+        `;
+      } else if (c.id === 'rabbit') {
+        ears = `
+          <ellipse cx="34" cy="22" rx="9" ry="20" transform="rotate(-10 34 22)" fill="${c.ear}" stroke="#475569" stroke-width="2.5"/>
+          <ellipse cx="34" cy="23" rx="4.5" ry="13" transform="rotate(-10 34 23)" fill="${c.innerEar}"/>
+          <ellipse cx="66" cy="22" rx="9" ry="20" transform="rotate(10 66 22)" fill="${c.ear}" stroke="#475569" stroke-width="2.5"/>
+          <ellipse cx="66" cy="23" rx="4.5" ry="13" transform="rotate(10 66 23)" fill="${c.innerEar}"/>
+        `;
+      } else {
+        ears = `
+          <circle cx="25" cy="27" r="12" fill="${c.ear}" stroke="#334155" stroke-width="2.5"/>
+          <circle cx="25" cy="27" r="6" fill="${c.innerEar}"/>
+          <circle cx="75" cy="27" r="12" fill="${c.ear}" stroke="#334155" stroke-width="2.5"/>
+          <circle cx="75" cy="27" r="6" fill="${c.innerEar}"/>
+        `;
+      }
+
+      // 2) 캐릭터별 얼굴 무늬
+      let markings = '';
+      if (c.id === 'panda') {
+        markings = `
+          <ellipse cx="36" cy="53" rx="10" ry="8" transform="rotate(-18 36 53)" fill="#1e293b"/>
+          <ellipse cx="64" cy="53" rx="10" ry="8" transform="rotate(18 64 53)" fill="#1e293b"/>
+        `;
+      } else if (c.id === 'fox') {
+        markings = `
+          <path d="M20,62 Q34,54 50,67 Q66,54 80,62 Q76,84 50,86 Q24,84 20,62 Z" fill="#fff7ed"/>
+        `;
+      } else if (c.id === 'bear' || c.id === 'dog') {
+        markings = `
+          <ellipse cx="50" cy="67" rx="16" ry="12" fill="${c.innerEar}" opacity="0.9"/>
+        `;
+      } else if (c.id === 'cat') {
+        markings = `
+          <path d="M44,27 L46,35 M50,25 L50,35 M56,27 L54,35" stroke="${c.accent}" stroke-width="2.8" stroke-linecap="round"/>
+        `;
+      }
+
+      // 3) 표정별 눈 & 입 & 특수효과
+      const eyeFill = c.id === 'panda' ? '#ffffff' : '#1e293b';
+      const pupilFill = c.id === 'panda' ? '#0f172a' : '#ffffff';
+      let eyes = '';
+      let mouth = '';
+      let fx = '';
+
+      if (mood === 'happy') {
+        eyes = `
+          <path d="M29,54 Q36,44 43,54" fill="none" stroke="${eyeFill}" stroke-width="3.6" stroke-linecap="round"/>
+          <path d="M57,54 Q64,44 71,54" fill="none" stroke="${eyeFill}" stroke-width="3.6" stroke-linecap="round"/>
+        `;
+        mouth = `<path d="M40,68 Q50,81 60,68 Z" fill="#f43f5e" stroke="#3f2a1d" stroke-width="2.2" stroke-linejoin="round"/>`;
+        fx = `
+          <circle cx="25" cy="64" r="5" fill="#fb7185" opacity="0.5"/>
+          <circle cx="75" cy="64" r="5" fill="#fb7185" opacity="0.5"/>
+          <text x="76" y="34" font-size="16">✨</text>
+        `;
+      } else if (mood === 'smug') {
+        eyes = `
+          <circle cx="36" cy="53" r="4.8" fill="${eyeFill}"/>
+          <circle cx="34.5" cy="51.5" r="1.7" fill="${pupilFill}"/>
+          <path d="M57,53 Q64,47 71,53" fill="none" stroke="${eyeFill}" stroke-width="3.5" stroke-linecap="round"/>
+          <path d="M29,44 L43,46" stroke="${eyeFill}" stroke-width="2.4" stroke-linecap="round"/>
+        `;
+        mouth = `<path d="M41,70 Q52,77 61,67" fill="none" stroke="#3f2a1d" stroke-width="3" stroke-linecap="round"/>`;
+        fx = `<circle cx="26" cy="64" r="4.2" fill="#fb7185" opacity="0.35"/>`;
+      } else if (mood === 'focused') {
+        eyes = `
+          <circle cx="36" cy="54" r="4.8" fill="${eyeFill}"/>
+          <circle cx="36" cy="54" r="2" fill="#facc15"/>
+          <circle cx="64" cy="54" r="4.8" fill="${eyeFill}"/>
+          <circle cx="64" cy="54" r="2" fill="#facc15"/>
+          <path d="M28,44 L44,50 M72,44 L56,50" stroke="#dc2626" stroke-width="3.2" stroke-linecap="round"/>
+        `;
+        mouth = `<path d="M43,72 L57,72" stroke="#3f2a1d" stroke-width="3.2" stroke-linecap="round"/>`;
+        fx = `<text x="74" y="34" font-size="15">🔥</text>`;
+      } else if (mood === 'nervous') {
+        eyes = `
+          <circle cx="36" cy="53" r="5.5" fill="#ffffff" stroke="#1e293b" stroke-width="2"/>
+          <circle cx="36" cy="53" r="2.1" fill="#1e293b"/>
+          <circle cx="64" cy="53" r="5.5" fill="#ffffff" stroke="#1e293b" stroke-width="2"/>
+          <circle cx="64" cy="53" r="2.1" fill="#1e293b"/>
+          <path d="M29,44 Q36,41 42,45 M71,44 Q64,41 58,45" fill="none" stroke="#475569" stroke-width="2.2" stroke-linecap="round"/>
+        `;
+        mouth = `<path d="M41,72 Q45,68 50,72 Q55,76 59,72" fill="none" stroke="#3f2a1d" stroke-width="2.6" stroke-linecap="round"/>`;
+        fx = `<path d="M80,34 Q86,44 80,48 Q74,44 80,34 Z" fill="#38bdf8" stroke="#0284c7" stroke-width="1.5"/>`;
+      } else if (mood === 'shock') {
+        eyes = `
+          <path d="M31,48 L41,58 M41,48 L31,58" stroke="${eyeFill}" stroke-width="3.2" stroke-linecap="round"/>
+          <path d="M59,48 L69,58 M69,48 L59,58" stroke="${eyeFill}" stroke-width="3.2" stroke-linecap="round"/>
+        `;
+        mouth = `<ellipse cx="50" cy="73" rx="7" ry="8.5" fill="#1e293b" stroke="#f43f5e" stroke-width="2"/>`;
+        fx = `<path d="M16,32 L24,38 M14,42 L22,44 M84,32 L76,38" stroke="#ef4444" stroke-width="2.8" stroke-linecap="round"/>`;
+      } else if (mood === 'sad') {
+        eyes = `
+          <circle cx="36" cy="54" r="4.6" fill="${eyeFill}"/>
+          <circle cx="34.5" cy="52" r="1.8" fill="${pupilFill}"/>
+          <circle cx="64" cy="54" r="4.6" fill="${eyeFill}"/>
+          <circle cx="62.5" cy="52" r="1.8" fill="${pupilFill}"/>
+          <path d="M29,48 L43,44 M71,48 L57,44" stroke="#475569" stroke-width="2.4" stroke-linecap="round"/>
+        `;
+        mouth = `<path d="M42,74 Q50,67 58,74" fill="none" stroke="#3f2a1d" stroke-width="2.8" stroke-linecap="round"/>`;
+        fx = `
+          <path d="M32,61 Q30,69 34,70 Q38,69 36,61 Z" fill="#60a5fa"/>
+          <path d="M64,61 Q62,69 66,70 Q70,69 68,61 Z" fill="#60a5fa"/>
+        `;
+      } else {
+        eyes = `
+          <circle cx="36" cy="53" r="4.8" fill="${eyeFill}"/>
+          <circle cx="34.3" cy="51.2" r="1.8" fill="${pupilFill}"/>
+          <circle cx="64" cy="53" r="4.8" fill="${eyeFill}"/>
+          <circle cx="62.3" cy="51.2" r="1.8" fill="${pupilFill}"/>
+        `;
+        mouth = `<path d="M43,69 Q50,76 57,69" fill="none" stroke="#3f2a1d" stroke-width="2.8" stroke-linecap="round"/>`;
+        fx = `
+          <circle cx="26" cy="63" r="4.2" fill="#fb7185" opacity="0.32"/>
+          <circle cx="74" cy="63" r="4.2" fill="#fb7185" opacity="0.32"/>
+        `;
+      }
+
+      const nose = `<ellipse cx="50" cy="62" rx="4.2" ry="3" fill="#292524"/>`;
+
+      return `
+        <svg viewBox="0 0 100 100" class="w-full h-full block" aria-hidden="true">
+          <circle cx="50" cy="50" r="50" fill="${bgGrad}"/>
+          ${ears}
+          <circle cx="50" cy="56" r="32" fill="${c.base}" stroke="#3f2a1d" stroke-width="2.6"/>
+          ${markings}
+          ${eyes}
+          ${nose}
+          ${mouth}
+          ${fx}
+        </svg>
+      `;
+    }
+
+    // =========================================================================
+    // 4. 게임 상수 & 상태 관리
+    // =========================================================================
+    const GRID_W = 200;
+    const GRID_H = 140;
+    const TOTAL_CELLS = GRID_W * GRID_H;
+
+    // 고해상도 지형 오프스크린 캔버스 (그리드의 3배 해상도 -> 선명한 모래/등고선/음영)
+    const TERRAIN_SCALE = 3;
+    const TERRAIN_W = GRID_W * TERRAIN_SCALE; // 600
+    const TERRAIN_H = GRID_H * TERRAIN_SCALE; // 420
+
+    const EARLY_WIN_PERCENT = 60.0;
+    const STONE_RADIUS = 3.1;         // 말 반지름 (그리드 단위)
+    const MAX_PULL_DIST = 42;
+    const MIN_PULL_DIST = 4;
+    const POWER_SCALE = 0.155;
+    const POWER_UP_MULT = 1.55;       // 파워 업 아이템 배율
+    const FRICTION_60FPS = 0.952;     // 점성 마찰
+    const ROLLING_DRAG = 0.0075;      // 구름/정지 마찰 (완만한 경사에서 깔끔히 정지)
+    const ENEMY_TERRITORY_FRICTION = 0.892;  // 상대 땅 진입 시 강한 감속 마찰
+    const ENEMY_TERRITORY_DRAG = 0.022;      // 상대 땅 진입 시 구름 저항 증가
+    const ENEMY_TERRITORY_POWER_MULT = 0.72; // 상대 땅 위에서 튕길 때 세기(파워) 약화 배율
+    const GRAVITY_SCALE = 0.115;      // 높낮이 경사 민감도 (적당히 휘어지되 과하게 구르지 않음)
+    const STOP_SPEED = 0.085;
+    const SHOT_CLOCK_MAX = 5.0;       // 매 튕기기 5초 제한
+    const BOMB_RADIUS = 16.5;         // 폭탄 폭발 반경 (그리드 단위)
+    const BOMB_DEPTH = 1.05;          // 크레이터 파이는 깊이
+
+    const state = {
+      gameType: 'turn',       // 'turn' | 'realtime'
+      mode: 'local',          // 'local' | 'online'
+      roomCode: null,
+      myPlayerNum: 1,
+      unsubRoom: null,
+      lastProcessedActionId: 0,
+
+      status: 'lobby',        // 'lobby' | 'waiting' | 'playing' | 'finished'
+      helpOpen: false,
+      seed: 12345,
+      maxRounds: 12,
+      currentRound: 1,
+      turnCount: 0,           // 총 진행된 턴 수 (2턴마다 아이템 스폰)
+      firstPlayer: 1,         // 선후공 룰렛으로 결정된 선공 팀 (1 | 2)
+      currentTurn: 1,         // 1 (파랑) | 2 (빨강)
+      maxFlicksThisTurn: 3,   // 기본 3, 다음 턴 +1 적용 시 4
+      flicksLeft: 3,
+      hasLeftTerritory: false,
+
+      p1Name: '파랑팀',
+      p2Name: '빨강팀',
+      p1Avatar: 'dog',
+      p2Avatar: 'cat',
+      avatarMoodOverride: {
+        1: { mood: null, until: 0 },
+        2: { mood: null, until: 0 }
+      },
+      lastRenderedMood: { 1: '', 2: '' },
+
+      // 2D 데이터 배열
+      grid: new Uint8Array(TOTAL_CELLS),          // 0: 빈 땅, 1: P1, 2: P2
+      baseHeight: new Float32Array(TOTAL_CELLS),  // 시드 기반 기본 높낮이
+      heightmap: new Float32Array(TOTAL_CELLS),   // 기본 높낮이 + 폭탄 크레이터
+      craterMask: new Float32Array(TOTAL_CELLS),  // 0~1 그을림/파임 정도
+      craters: [],                                // [{x, y, r, depth}, ...]
+
+      p1Percent: 0,
+      p2Percent: 0,
+
+      // 장애물 & 맵 아이템
+      obstacles: [],
+      mapItems: [],           // [{id, type, x, y}, ...]
+      nextItemId: 1,
+
+      // 플레이어별 인벤토리 & 버프
+      inventories: {
+        1: { power: 0, extraFlick: 0, bomb: 0 },
+        2: { power: 0, extraFlick: 0, bomb: 0 }
+      },
+      nextTurnBonus: { 1: false, 2: false }, // 다음 턴 +1 튕기기 예약 여부
+      powerBoostActive: false,               // 현재 튕기기에 파워업 활성 여부
+      bombTargeting: false,                  // 폭탄 투하 위치 선택 모드
+
+      // 5초 초시계
+      shotClock: SHOT_CLOCK_MAX,
+      lastTickMark: 5,
+
+      // 말(납작돌) 상태
+      stone: { x: 24, y: GRID_H - 24, vx: 0, vy: 0, moving: false, slideTime: 0, inEnemyLand: false },
+      turnPath: [],
+      fireTrail: [],
+
+      // 온라인 상대방 이동 애니메이션 / 폭탄 투하 애니메이션
+      remoteAnim: null,
+      bombAnim: null,
+      screenShake: 0,
+
+      // 포인터 드래그
+      drag: { active: false, pointerId: null, currX: 0, currY: 0 },
+
+      // 파티클 & 플로팅 텍스트
+      particles: [],
+      floatingTexts: []
+    };
+
+    // 오프스크린 캔버스 1: 현실감 있는 지형 (모래 + 3D 힐쉐이딩 + 등고선 + 크레이터)
+    const terrainCanvas = document.createElement('canvas');
+    terrainCanvas.width = TERRAIN_W;
+    terrainCanvas.height = TERRAIN_H;
+    const terrainCtx = terrainCanvas.getContext('2d');
+    const terrainImgData = terrainCtx.createImageData(TERRAIN_W, TERRAIN_H);
+
+    // 오프스크린 캔버스 2: 플레이어 점유 땅 (분필/안료 염색 레이어)
+    const territoryCanvas = document.createElement('canvas');
+    territoryCanvas.width = GRID_W;
+    territoryCanvas.height = GRID_H;
+    const territoryCtx = territoryCanvas.getContext('2d');
+    const territoryImgData = territoryCtx.createImageData(GRID_W, GRID_H);
+
+    // 메인 캔버스
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // =========================================================================
+    // 5. 지형 높낮이(Heightmap) 생성 & 3D 힐쉐이딩 / 등고선 렌더링
+    // =========================================================================
+    function generateHeightmap(seed) {
+      const rng = createRNG(seed);
+
+      const makeNoiseGrid = (gw, gh) => {
+        const arr = new Float32Array(gw * gh);
+        for (let i = 0; i < arr.length; i++) arr[i] = rng() * 2 - 1;
+        return { gw, gh, arr };
+      };
+
+      const sampleSmooth = (ng, u, v) => {
+        const fx = u * (ng.gw - 1);
+        const fy = v * (ng.gh - 1);
+        const x0 = Math.floor(fx);
+        const y0 = Math.floor(fy);
+        const x1 = Math.min(ng.gw - 1, x0 + 1);
+        const y1 = Math.min(ng.gh - 1, y0 + 1);
+        const tx = fx - x0;
+        const ty = fy - y0;
+        const sx = tx * tx * (3 - 2 * tx);
+        const sy = ty * ty * (3 - 2 * ty);
+
+        const v00 = ng.arr[y0 * ng.gw + x0];
+        const v10 = ng.arr[y0 * ng.gw + x1];
+        const v01 = ng.arr[y1 * ng.gw + x0];
+        const v11 = ng.arr[y1 * ng.gw + x1];
+
+        const ix0 = v00 + (v10 - v00) * sx;
+        const ix1 = v01 + (v11 - v01) * sx;
+        return ix0 + (ix1 - ix0) * sy;
+      };
+
+      const octave1 = makeNoiseGrid(6, 5);
+      const octave2 = makeNoiseGrid(12, 9);
+      const octave3 = makeNoiseGrid(24, 17);
+
+      const features = [];
+      for (let i = 0; i < 4; i++) {
+        features.push({
+          x: 35 + rng() * (GRID_W - 70),
+          y: 25 + rng() * (GRID_H - 50),
+          r: 22 + rng() * 20,
+          amp: (i % 2 === 0 ? 1 : -1) * (0.48 + rng() * 0.25)
+        });
+      }
+
+      for (let y = 0; y < GRID_H; y++) {
+        const v = y / (GRID_H - 1);
+        for (let x = 0; x < GRID_W; x++) {
+          const u = x / (GRID_W - 1);
+          let h =
+            sampleSmooth(octave1, u, v) * 0.62 +
+            sampleSmooth(octave2, u, v) * 0.26 +
+            sampleSmooth(octave3, u, v) * 0.12;
+
+          for (const f of features) {
+            const dx = x - f.x;
+            const dy = y - f.y;
+            const d2 = dx * dx + dy * dy;
+            const r2 = f.r * f.r;
+            if (d2 < r2 * 2.5) {
+              h += f.amp * Math.exp(-d2 / (r2 * 0.65));
+            }
+          }
+
+          const dP1 = Math.hypot(x, GRID_H - 1 - y);
+          const dP2 = Math.hypot(GRID_W - 1 - x, y);
+          const edgeDamp = Math.min(1, Math.min(dP1, dP2) / 28);
+          h *= (0.35 + 0.65 * edgeDamp);
+
+          state.baseHeight[y * GRID_W + x] = h;
+          state.heightmap[y * GRID_W + x] = h;
+          state.craterMask[y * GRID_W + x] = 0;
+        }
+      }
+
+      for (const c of state.craters) {
+        applyCraterToHeightmap(c.x, c.y, c.r, c.depth);
+      }
+
+      renderTerrainRegion(0, 0, GRID_W - 1, GRID_H - 1);
+    }
+
+    function applyCraterToHeightmap(cx, cy, radius, depth) {
+      const minX = Math.max(0, Math.floor(cx - radius * 1.35));
+      const maxX = Math.min(GRID_W - 1, Math.ceil(cx + radius * 1.35));
+      const minY = Math.max(0, Math.floor(cy - radius * 1.35));
+      const maxY = Math.min(GRID_H - 1, Math.ceil(cy + radius * 1.35));
+
+      for (let y = minY; y <= maxY; y++) {
+        for (let x = minX; x <= maxX; x++) {
+          const dist = Math.hypot(x - cx, y - cy);
+          const norm = dist / radius;
+          const idx = y * GRID_W + x;
+          if (norm < 1.0) {
+            const bowl = Math.cos(norm * Math.PI * 0.5);
+            state.heightmap[idx] = Math.max(-2.4, state.heightmap[idx] - depth * bowl * bowl);
+            state.craterMask[idx] = Math.min(1.0, state.craterMask[idx] + bowl * 0.95);
+          } else if (norm < 1.3) {
+            const rimT = (norm - 1.0) / 0.3;
+            const rim = Math.sin(rimT * Math.PI) * 0.14 * depth;
+            state.heightmap[idx] += rim;
+            state.craterMask[idx] = Math.min(1.0, state.craterMask[idx] + Math.sin(rimT * Math.PI) * 0.25);
+          }
+        }
+      }
+    }
+
+    function sampleHeight(x, y) {
+      const cx = Math.max(0, Math.min(GRID_W - 1.001, x));
+      const cy = Math.max(0, Math.min(GRID_H - 1.001, y));
+      const x0 = Math.floor(cx);
+      const y0 = Math.floor(cy);
+      const x1 = x0 + 1;
+      const y1 = y0 + 1;
+      const tx = cx - x0;
+      const ty = cy - y0;
+
+      const h00 = state.heightmap[y0 * GRID_W + x0];
+      const h10 = state.heightmap[y0 * GRID_W + x1];
+      const h01 = state.heightmap[y1 * GRID_W + x0];
+      const h11 = state.heightmap[y1 * GRID_W + x1];
+
+      const hx0 = h00 + (h10 - h00) * tx;
+      const hx1 = h01 + (h11 - h01) * tx;
+      return hx0 + (hx1 - hx0) * ty;
+    }
+
+    function sampleSlope(x, y) {
+      const eps = 1.0;
+      const gx = (sampleHeight(x + eps, y) - sampleHeight(x - eps, y)) / (2 * eps);
+      const gy = (sampleHeight(x, y + eps) - sampleHeight(x, y - eps)) / (2 * eps);
+      return { gx, gy };
+    }
+
+    function fastHash2D(x, y) {
+      let n = Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(state.seed, 1442695041);
+      n = (n ^ (n >>> 13)) * 1274126177;
+      return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+    }
+
+    function renderTerrainRegion(gx0, gy0, gx1, gy1) {
+      const px0 = Math.max(0, Math.floor(gx0 * TERRAIN_SCALE));
+      const py0 = Math.max(0, Math.floor(gy0 * TERRAIN_SCALE));
+      const px1 = Math.min(TERRAIN_W - 1, Math.ceil((gx1 + 1) * TERRAIN_SCALE) - 1);
+      const py1 = Math.min(TERRAIN_H - 1, Math.ceil((gy1 + 1) * TERRAIN_SCALE) - 1);
+
+      const data = terrainImgData.data;
+      const lx = -0.58, ly = -0.58, lz = 0.57;
+
+      for (let py = py0; py <= py1; py++) {
+        const gy = py / TERRAIN_SCALE;
+        const igy = Math.min(GRID_H - 1, Math.floor(gy));
+        const rowOff = py * TERRAIN_W;
+
+        for (let px = px0; px <= px1; px++) {
+          const gx = px / TERRAIN_SCALE;
+          const igx = Math.min(GRID_W - 1, Math.floor(gx));
+
+          const h = sampleHeight(gx, gy);
+          const { gx: dhx, gy: dhy } = sampleSlope(gx, gy);
+
+          const slopeBoost = 11.5;
+          const nx = -dhx * slopeBoost;
+          const ny = -dhy * slopeBoost;
+          const nz = 1.0;
+          const invLen = 1 / Math.hypot(nx, ny, nz);
+          const diff = Math.max(0.28, (nx * lx + ny * ly + nz * lz) * invLen);
+
+          const elevNorm = Math.max(-1.2, Math.min(1.2, h));
+          let r = 214 + elevNorm * 22;
+          let g = 186 + elevNorm * 19;
+          let b = 142 + elevNorm * 14;
+
+          const grain = (fastHash2D(px, py) - 0.5) * 18;
+          const pebbleCheck = fastHash2D(px >> 1, py >> 1);
+          const pebble = pebbleCheck > 0.988 ? -24 : pebbleCheck < 0.008 ? 16 : 0;
+
+          r += grain + pebble;
+          g += grain * 0.92 + pebble;
+          b += grain * 0.8 + pebble;
+
+          const cm = state.craterMask[igy * GRID_W + igx];
+          if (cm > 0.01) {
+            const dark = Math.min(1, cm);
+            r = r * (1 - dark * 0.52) + 74 * (dark * 0.52);
+            g = g * (1 - dark * 0.56) + 56 * (dark * 0.56);
+            b = b * (1 - dark * 0.6) + 42 * (dark * 0.6);
+          }
+
+          const shade = 0.66 + diff * 0.52;
+          r *= shade;
+          g *= shade;
+          b *= shade;
+
+          const edgeDist = Math.min(gx, GRID_W - gx, gy, GRID_H - gy);
+          if (edgeDist < 2.6) {
+            const grassMix = (1 - edgeDist / 2.6) * (0.35 + fastHash2D(px >> 1, py >> 1) * 0.55);
+            r = r * (1 - grassMix) + 76 * grassMix;
+            g = g * (1 - grassMix) + 116 * grassMix;
+            b = b * (1 - grassMix) + 58 * grassMix;
+          }
+
+          const contourInterval = 0.28;
+          const mod = Math.abs(((h % contourInterval) + contourInterval) % contourInterval);
+          const distToLine = Math.min(mod, contourInterval - mod);
+          if (distToLine < 0.012) {
+            r *= 0.86;
+            g *= 0.84;
+            b *= 0.81;
+          }
+
+          const p = (rowOff + px) * 4;
+          data[p] = Math.max(0, Math.min(255, r));
+          data[p + 1] = Math.max(0, Math.min(255, g));
+          data[p + 2] = Math.max(0, Math.min(255, b));
+          data[p + 3] = 255;
+        }
+      }
+
+      terrainCtx.putImageData(terrainImgData, 0, 0, px0, py0, px1 - px0 + 1, py1 - py0 + 1);
+    }
+
+    // =========================================================================
+    // 6. 랜덤 구조물(장애물) 생성 & 정밀 물리 충돌 처리
+    // =========================================================================
+    function generateObstacles(seed) {
+      const rng = createRNG(seed ^ 0x5A5A5A5A);
+      const list = [];
+      const targetCount = 5 + Math.floor(rng() * 3);
+      const types = ['boulder', 'log', 'brick', 'boulder', 'log', 'brick', 'boulder'];
+
+      let attempts = 0;
+      while (list.length < targetCount && attempts < 200) {
+        attempts++;
+        const type = types[list.length % types.length];
+        const x = 32 + rng() * (GRID_W - 64);
+        const y = 22 + rng() * (GRID_H - 44);
+
+        if (Math.hypot(x, GRID_H - y) < 46) continue;
+        if (Math.hypot(GRID_W - x, y) < 46) continue;
+
+        let tooClose = false;
+        for (const o of list) {
+          if (Math.hypot(x - o.x, y - o.y) < 28) {
+            tooClose = true;
+            break;
+          }
+        }
+        if (tooClose) continue;
+
+        if (type === 'boulder') {
+          const r = 3.2 + rng() * 1.5;
+          const verts = [];
+          const vCount = 9;
+          for (let v = 0; v < vCount; v++) {
+            const ang = (v / vCount) * Math.PI * 2;
+            const jitter = 0.84 + rng() * 0.28;
+            verts.push({ cos: Math.cos(ang) * jitter, sin: Math.sin(ang) * jitter });
+          }
+          list.push({
+            type: 'boulder',
+            x, y, r, verts,
+            angle: rng() * Math.PI * 2,
+            seed: Math.floor(rng() * 10000)
+          });
+        } else if (type === 'log') {
+          list.push({
+            type: 'log',
+            x, y,
+            hw: 5.8 + rng() * 2.4,
+            hh: 1.7 + rng() * 0.5,
+            angle: rng() * Math.PI,
+            seed: Math.floor(rng() * 10000)
+          });
+        } else {
+          list.push({
+            type: 'brick',
+            x, y,
+            hw: 4.4 + rng() * 1.5,
+            hh: 2.2 + rng() * 0.6,
+            angle: (rng() - 0.5) * 1.4,
+            seed: Math.floor(rng() * 10000)
+          });
+        }
+      }
+      state.obstacles = list;
+    }
+
+    function isPointNearObstacle(x, y, pad = 6) {
+      for (const o of state.obstacles) {
+        if (o.type === 'boulder') {
+          if (Math.hypot(x - o.x, y - o.y) < o.r + pad) return true;
+        } else {
+          const dx = x - o.x;
+          const dy = y - o.y;
+          const cos = Math.cos(-o.angle);
+          const sin = Math.sin(-o.angle);
+          const lx = dx * cos - dy * sin;
+          const ly = dx * sin + dy * cos;
+          if (Math.abs(lx) < o.hw + pad && Math.abs(ly) < o.hh + pad) return true;
+        }
+      }
+      return false;
+    }
+
+    function resolveObstacleCollisions() {
+      const s = state.stone;
+      for (const o of state.obstacles) {
+        if (o.type === 'boulder') {
+          const dx = s.x - o.x;
+          const dy = s.y - o.y;
+          const dist = Math.hypot(dx, dy);
+          const minDist = STONE_RADIUS + o.r;
+          if (dist < minDist && dist > 0.0001) {
+            const nx = dx / dist;
+            const ny = dy / dist;
+            s.x = o.x + nx * minDist;
+            s.y = o.y + ny * minDist;
+            const vn = s.vx * nx + s.vy * ny;
+            if (vn < 0) {
+              const restitution = 0.72;
+              s.vx -= (1 + restitution) * vn * nx;
+              s.vy -= (1 + restitution) * vn * ny;
+              SoundFX.playClack('rock', Math.abs(vn) / 3);
+              spawnDustParticles(s.x - nx * STONE_RADIUS, s.y - ny * STONE_RADIUS, 6);
+            }
+          }
+        } else {
+          const dx = s.x - o.x;
+          const dy = s.y - o.y;
+          const cos = Math.cos(-o.angle);
+          const sin = Math.sin(-o.angle);
+          const lx = dx * cos - dy * sin;
+          const ly = dx * sin + dy * cos;
+
+          const clampedX = Math.max(-o.hw, Math.min(o.hw, lx));
+          const clampedY = Math.max(-o.hh, Math.min(o.hh, ly));
+          const diffX = lx - clampedX;
+          const diffY = ly - clampedY;
+          const dist = Math.hypot(diffX, diffY);
+
+          if (dist < STONE_RADIUS) {
+            let lnx = 0, lny = 0, pen = 0;
+            if (dist > 0.0001) {
+              lnx = diffX / dist;
+              lny = diffY / dist;
+              pen = STONE_RADIUS - dist;
+            } else {
+              const px = o.hw - Math.abs(lx);
+              const py = o.hh - Math.abs(ly);
+              if (px < py) { lnx = lx >= 0 ? 1 : -1; pen = px + STONE_RADIUS; }
+              else { lny = ly >= 0 ? 1 : -1; pen = py + STONE_RADIUS; }
+            }
+
+            const wCos = Math.cos(o.angle);
+            const wSin = Math.sin(o.angle);
+            const nx = lnx * wCos - lny * wSin;
+            const ny = lnx * wSin + lny * wCos;
+
+            s.x += nx * pen;
+            s.y += ny * pen;
+
+            const vn = s.vx * nx + s.vy * ny;
+            if (vn < 0) {
+              const restitution = o.type === 'log' ? 0.64 : 0.72;
+              s.vx -= (1 + restitution) * vn * nx;
+              s.vy -= (1 + restitution) * vn * ny;
+              SoundFX.playClack(o.type === 'log' ? 'wood' : 'rock', Math.abs(vn) / 3);
+              spawnDustParticles(s.x - nx * STONE_RADIUS, s.y - ny * STONE_RADIUS, 6);
+            }
+          }
+        }
+      }
+    }
+
+    // =========================================================================
+    // 7. 전술 아이템 스폰, 획득, 사용 (파워 업 / 다음 턴 +1 / 폭탄)
+    // =========================================================================
+    const ITEM_META = {
+      power: { icon: '⚡', name: '파워 업', color: '#f59e0b', bg: '#fef3c7' },
+      extraFlick: { icon: '🪨', name: '다음 턴 +1', color: '#10b981', bg: '#d1fae5' },
+      bomb: { icon: '💣', name: '폭탄 투하', color: '#ef4444', bg: '#fee2e2' }
+    };
+
+    function spawnRandomItem(rngFn = Math.random) {
+      if (state.mapItems.length >= 4) return;
+      const types = ['power', 'extraFlick', 'bomb'];
+
+      for (let tries = 0; tries < 60; tries++) {
+        const x = 22 + rngFn() * (GRID_W - 44);
+        const y = 18 + rngFn() * (GRID_H - 36);
+        if (Math.hypot(x, GRID_H - y) < 38) continue;
+        if (Math.hypot(GRID_W - x, y) < 38) continue;
+        if (isPointNearObstacle(x, y, 8)) continue;
+        if (state.mapItems.some(it => Math.hypot(it.x - x, it.y - y) < 24)) continue;
+
+        const type = types[Math.floor(rngFn() * types.length)];
+        state.mapItems.push({ id: state.nextItemId++, type, x, y });
+        return;
+      }
+    }
+
+    function initMapItems(seed) {
+      const rng = createRNG(seed ^ 0x13579BDF);
+      state.mapItems = [];
+      state.nextItemId = 1;
+      for (let i = 0; i < 3; i++) spawnRandomItem(rng);
+    }
+
+    function checkItemPickup() {
+      const s = state.stone;
+      const pickupR = STONE_RADIUS + 5.0;
+      for (let i = state.mapItems.length - 1; i >= 0; i--) {
+        const it = state.mapItems[i];
+        if (Math.hypot(s.x - it.x, s.y - it.y) <= pickupR) {
+          state.mapItems.splice(i, 1);
+          const p = state.currentTurn;
+          state.inventories[p][it.type]++;
+          const meta = ITEM_META[it.type];
+          SoundFX.playPickup();
+          setAvatarMood(p, 'happy', 2000);
+          spawnCaptureParticles(it.x, it.y, p);
+          spawnFloatingText(it.x, it.y, `${meta.icon} ${meta.name}!`, meta.color);
+          showToast(`${meta.icon} [${meta.name}] 아이템을 획득했어요!`);
+          updateItemDock();
+        }
+      }
+    }
+
+    function launchBombTo(targetX, targetY, isRemote = false) {
+      const p = state.currentTurn;
+      const fromX = p === 1 ? 14 : GRID_W - 14;
+      const fromY = p === 1 ? GRID_H - 14 : 14;
+
+      if (!isRemote) {
+        state.inventories[p].bomb = Math.max(0, state.inventories[p].bomb - 1);
+        state.bombTargeting = false;
+        document.getElementById('bombTargetBanner').classList.add('hidden');
+        updateItemDock();
+      }
+
+      SoundFX.playBombWhistle();
+
+      state.bombAnim = {
+        fromX, fromY,
+        toX: targetX,
+        toY: targetY,
+        progress: 0,
+        duration: 0.62,
+        onImpact: async () => {
+          executeBombImpact(targetX, targetY);
+          if (!isRemote && state.mode === 'online') {
+            await pushOnlineState({
+              actionType: 'bomb',
+              from: { x: fromX, y: fromY },
+              to: { x: targetX, y: targetY },
+              winner: checkWinnerAfterBomb(),
+              winReason: '상대방의 땅이 모두 사라졌습니다!',
+              message: '💣 쾅! 폭탄이 터져 땅이 파였습니다!'
+            });
+          }
+          const w = checkWinnerAfterBomb();
+          if (w !== null) {
+            state.status = 'finished';
+            showResultModal(w, '폭탄 공격으로 상대방의 땅이 모두 사라졌습니다!');
+          } else {
+            resetShotClock();
+            updateStatusGuide();
+          }
+        }
+      };
+    }
+
+    function executeBombImpact(cx, cy) {
+      SoundFX.playExplosion();
+      state.screenShake = 14;
+
+      state.craters.push({ x: cx, y: cy, r: BOMB_RADIUS, depth: BOMB_DEPTH });
+      applyCraterToHeightmap(cx, cy, BOMB_RADIUS, BOMB_DEPTH);
+      renderTerrainRegion(
+        cx - BOMB_RADIUS * 1.45,
+        cy - BOMB_RADIUS * 1.45,
+        cx + BOMB_RADIUS * 1.45,
+        cy + BOMB_RADIUS * 1.45
+      );
+
+      const rSq = BOMB_RADIUS * BOMB_RADIUS;
+      const minX = Math.max(0, Math.floor(cx - BOMB_RADIUS));
+      const maxX = Math.min(GRID_W - 1, Math.ceil(cx + BOMB_RADIUS));
+      const minY = Math.max(0, Math.floor(cy - BOMB_RADIUS));
+      const maxY = Math.min(GRID_H - 1, Math.ceil(cy + BOMB_RADIUS));
+
+      let p1Lost = 0, p2Lost = 0;
+      for (let y = minY; y <= maxY; y++) {
+        for (let x = minX; x <= maxX; x++) {
+          if ((x - cx) ** 2 + (y - cy) ** 2 <= rSq) {
+            const owner = state.grid[y * GRID_W + x];
+            if (owner === 1) p1Lost++;
+            else if (owner === 2) p2Lost++;
+            state.grid[y * GRID_W + x] = 0;
+          }
+        }
+      }
+
+      if (p1Lost > 25) setAvatarMood(1, 'shock', 2400);
+      if (p2Lost > 25) setAvatarMood(2, 'shock', 2400);
+      if (state.currentTurn === 1 && p2Lost > 25) setAvatarMood(1, 'happy', 2200);
+      if (state.currentTurn === 2 && p1Lost > 25) setAvatarMood(2, 'happy', 2200);
+
+      recalcPercentages();
+      renderTerritoryToOffscreen();
+
+      const expColors = ['#f97316', '#ef4444', '#facc15', '#78350f', '#44403c', '#ffffff'];
+      for (let i = 0; i < 46; i++) {
+        const ang = Math.random() * Math.PI * 2;
+        const spd = 0.5 + Math.random() * 2.8;
+        state.particles.push({
+          x: cx, y: cy,
+          vx: Math.cos(ang) * spd,
+          vy: Math.sin(ang) * spd,
+          size: 2.0 + Math.random() * 3.5,
+          color: expColors[Math.floor(Math.random() * expColors.length)],
+          life: 1.0,
+          decay: 0.016 + Math.random() * 0.014
+        });
+      }
+      state.particles.push({
+        type: 'ripple',
+        x: cx, y: cy,
+        radius: 3,
+        maxRadius: BOMB_RADIUS * 1.35,
+        color: '#f97316',
+        life: 1.0,
+        decay: 0.04
+      });
+      spawnFloatingText(cx, cy, '💥 쾅! 땅 파괴!', '#ef4444');
+      showToast('💣 폭탄 명중! 땅이 깊게 파이고 주인 없는 땅이 되었어요!');
+    }
+
+    function checkWinnerAfterBomb() {
+      if (state.p1Percent <= 0.01 && state.p2Percent <= 0.01) return 0;
+      if (state.p2Percent <= 0.01) return 1;
+      if (state.p1Percent <= 0.01) return 2;
+      return null;
+    }
+
+    // =========================================================================
+    // 8. 영토 그리드, RLE 압축, BFS 영역 편입
+    // =========================================================================
+    function initTerritoryGrid() {
+      state.grid.fill(0);
+      const initR = 34;
+      const rSq = initR * initR;
+      for (let y = 0; y < GRID_H; y++) {
+        for (let x = 0; x < GRID_W; x++) {
+          if (x * x + (GRID_H - 1 - y) ** 2 <= rSq) {
+            state.grid[y * GRID_W + x] = 1;
+          } else if ((GRID_W - 1 - x) ** 2 + y * y <= rSq) {
+            state.grid[y * GRID_W + x] = 2;
+          }
+        }
+      }
+      recalcPercentages();
+      renderTerritoryToOffscreen();
+    }
+
+    function encodeGridRLE(grid) {
+      let out = [];
+      let curr = grid[0], count = 1;
+      for (let i = 1; i < grid.length; i++) {
+        if (grid[i] === curr) count++;
+        else {
+          out.push(curr === 0 ? `a${count}` : curr === 1 ? `b${count}` : `c${count}`);
+          curr = grid[i]; count = 1;
+        }
+      }
+      out.push(curr === 0 ? `a${count}` : curr === 1 ? `b${count}` : `c${count}`);
+      return out.join('');
+    }
+
+    function decodeGridRLE(str, targetGrid) {
+      let idx = 0;
+      const regex = /([abc])(\d+)/g;
+      let match;
+      while ((match = regex.exec(str)) !== null) {
+        const val = match[1] === 'a' ? 0 : match[1] === 'b' ? 1 : 2;
+        const count = parseInt(match[2], 10);
+        for (let k = 0; k < count && idx < targetGrid.length; k++) {
+          targetGrid[idx++] = val;
+        }
+      }
+    }
+
+    function recalcPercentages() {
+      let c1 = 0, c2 = 0;
+      for (let i = 0; i < TOTAL_CELLS; i++) {
+        if (state.grid[i] === 1) c1++;
+        else if (state.grid[i] === 2) c2++;
+      }
+      state.p1Percent = (c1 / TOTAL_CELLS) * 100;
+      state.p2Percent = (c2 / TOTAL_CELLS) * 100;
+      updateHUD();
+    }
+
+    function renderTerritoryToOffscreen() {
+      const data = territoryImgData.data;
+      const g = state.grid;
+
+      for (let y = 0; y < GRID_H; y++) {
+        const row = y * GRID_W;
+        for (let x = 0; x < GRID_W; x++) {
+          const idx = row + x;
+          const val = g[idx];
+          const p = idx * 4;
+
+          if (val === 0) {
+            data[p + 3] = 0;
+          } else {
+            const isOuterBorder =
+              x === 0 || x === GRID_W - 1 || y === 0 || y === GRID_H - 1 ||
+              g[idx - 1] !== val || g[idx + 1] !== val ||
+              g[idx - GRID_W] !== val || g[idx + GRID_W] !== val;
+
+            if (isOuterBorder) {
+              if (val === 1) {
+                data[p] = 29; data[p + 1] = 78; data[p + 2] = 216; data[p + 3] = 235;
+              } else {
+                data[p] = 185; data[p + 1] = 28; data[p + 2] = 28; data[p + 3] = 235;
+              }
+            } else {
+              if (val === 1) {
+                data[p] = 59; data[p + 1] = 130; data[p + 2] = 246; data[p + 3] = 108;
+              } else {
+                data[p] = 239; data[p + 1] = 68; data[p + 2] = 68; data[p + 3] = 108;
+              }
+            }
+          }
+        }
+      }
+      territoryCtx.putImageData(territoryImgData, 0, 0);
+    }
+
+    function drawLineOnMask(mask, x0, y0, x1, y1, val) {
+      let ix0 = Math.max(0, Math.min(GRID_W - 1, Math.round(x0)));
+      let iy0 = Math.max(0, Math.min(GRID_H - 1, Math.round(y0)));
+      const ix1 = Math.max(0, Math.min(GRID_W - 1, Math.round(x1)));
+      const iy1 = Math.max(0, Math.min(GRID_H - 1, Math.round(y1)));
+
+      const dx = Math.abs(ix1 - ix0);
+      const dy = Math.abs(iy1 - iy0);
+      const sx = ix0 < ix1 ? 1 : -1;
+      const sy = iy0 < iy1 ? 1 : -1;
+      let err = dx - dy;
+
+      while (true) {
+        mask[iy0 * GRID_W + ix0] = val;
+        if (ix0 === ix1 && iy0 === iy1) break;
+        const e2 = 2 * err;
+        let movedX = false;
+        let prevX = ix0;
+        if (e2 > -dy) { err -= dy; ix0 += sx; movedX = true; }
+        if (e2 < dx) {
+          err += dx; iy0 += sy;
+          if (movedX) mask[iy0 * GRID_W + prevX] = val;
+        }
+      }
+    }
+
+    function segmentLeavesTerritory(x0, y0, x1, y1, player) {
+      const steps = Math.max(Math.ceil(Math.hypot(x1 - x0, y1 - y0) * 2), 1);
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const gx = Math.max(0, Math.min(GRID_W - 1, Math.round(x0 + (x1 - x0) * t)));
+        const gy = Math.max(0, Math.min(GRID_H - 1, Math.round(y0 + (y1 - y0) * t)));
+        if (state.grid[gy * GRID_W + gx] !== player) return true;
+      }
+      return false;
+    }
+
+    function captureTerritory(player, pathPoints) {
+      const wall = new Uint8Array(TOTAL_CELLS);
+      for (let i = 0; i < TOTAL_CELLS; i++) {
+        if (state.grid[i] === player) wall[i] = 1;
+      }
+
+      const pathMask = new Uint8Array(TOTAL_CELLS);
+      for (let i = 0; i < pathPoints.length - 1; i++) {
+        drawLineOnMask(wall, pathPoints[i].x, pathPoints[i].y, pathPoints[i + 1].x, pathPoints[i + 1].y, 1);
+        drawLineOnMask(pathMask, pathPoints[i].x, pathPoints[i].y, pathPoints[i + 1].x, pathPoints[i + 1].y, 1);
+      }
+
+      const visited = new Uint8Array(TOTAL_CELLS);
+      const queue = new Int32Array(TOTAL_CELLS);
+      const components = [];
+
+      for (let start = 0; start < TOTAL_CELLS; start++) {
+        if (wall[start] === 1 || visited[start] === 1) continue;
+        let head = 0, tail = 0;
+        queue[tail++] = start;
+        visited[start] = 1;
+
+        while (head < tail) {
+          const curr = queue[head++];
+          const cx = curr % GRID_W;
+          const cy = (curr - cx) / GRID_W;
+
+          if (cx > 0 && wall[curr - 1] === 0 && visited[curr - 1] === 0) { visited[curr - 1] = 1; queue[tail++] = curr - 1; }
+          if (cx < GRID_W - 1 && wall[curr + 1] === 0 && visited[curr + 1] === 0) { visited[curr + 1] = 1; queue[tail++] = curr + 1; }
+          if (cy > 0 && wall[curr - GRID_W] === 0 && visited[curr - GRID_W] === 0) { visited[curr - GRID_W] = 1; queue[tail++] = curr - GRID_W; }
+          if (cy < GRID_H - 1 && wall[curr + GRID_W] === 0 && visited[curr + GRID_W] === 0) { visited[curr + GRID_W] = 1; queue[tail++] = curr + GRID_W; }
+        }
+        components.push({ cells: queue.slice(0, tail), size: tail });
+      }
+
+      let gainedCells = 0, sumX = 0, sumY = 0;
+
+      if (components.length > 1) {
+        let maxIdx = 0;
+        for (let i = 1; i < components.length; i++) {
+          if (components[i].size > components[maxIdx].size) maxIdx = i;
+        }
+        for (let i = 0; i < components.length; i++) {
+          if (i === maxIdx) continue;
+          const cells = components[i].cells;
+          for (let j = 0; j < cells.length; j++) {
+            const idx = cells[j];
+            if (state.grid[idx] !== player) {
+              state.grid[idx] = player;
+              gainedCells++;
+              sumX += idx % GRID_W;
+              sumY += (idx / GRID_W) | 0;
+            }
+          }
+        }
+      }
+
+      for (let i = 0; i < TOTAL_CELLS; i++) {
+        if (pathMask[i] === 1 && state.grid[i] !== player) {
+          state.grid[i] = player;
+          gainedCells++;
+          sumX += i % GRID_W;
+          sumY += (i / GRID_W) | 0;
+        }
+      }
+
+      recalcPercentages();
+      renderTerritoryToOffscreen();
+
+      if (gainedCells > 0) {
+        const cx = sumX / gainedCells;
+        const cy = sumY / gainedCells;
+        const pct = ((gainedCells / TOTAL_CELLS) * 100).toFixed(1);
+        spawnCaptureParticles(cx, cy, player);
+        spawnFloatingText(cx, cy, `+${pct}% 획득!`, player === 1 ? '#1d4ed8' : '#b91c1c');
+      }
+      return gainedCells;
+    }
+
+    function findDefaultStonePosition(player) {
+      const targetX = player === 1 ? GRID_W * 0.72 : GRID_W * 0.28;
+      const targetY = player === 1 ? GRID_H * 0.28 : GRID_H * 0.72;
+      let bestX = player === 1 ? 16 : GRID_W - 17;
+      let bestY = player === 1 ? GRID_H - 17 : 16;
+      let bestDist = Infinity;
+
+      for (let y = 5; y < GRID_H - 5; y += 3) {
+        for (let x = 5; x < GRID_W - 5; x += 3) {
+          if (state.grid[y * GRID_W + x] !== player) continue;
+          if (isPointNearObstacle(x, y, STONE_RADIUS + 2)) continue;
+          if (
+            state.grid[(y - 2) * GRID_W + x] === player &&
+            state.grid[(y + 2) * GRID_W + x] === player &&
+            state.grid[y * GRID_W + (x - 2)] === player &&
+            state.grid[y * GRID_W + (x + 2)] === player
+          ) {
+            const d = (x - targetX) ** 2 + (y - targetY) ** 2;
+            if (d < bestDist) { bestDist = d; bestX = x; bestY = y; }
+          }
+        }
+      }
+
+      if (bestDist === Infinity) {
+        for (let i = 0; i < TOTAL_CELLS; i++) {
+          if (state.grid[i] === player) {
+            bestX = i % GRID_W; bestY = (i / GRID_W) | 0;
+            break;
+          }
+        }
+      }
+      return { x: bestX, y: bestY };
+    }
+
+    function isInsideTerritory(x, y, player) {
+      const gx = Math.round(x);
+      const gy = Math.round(y);
+      if (gx < 0 || gx >= GRID_W || gy < 0 || gy >= GRID_H) return false;
+      return state.grid[gy * GRID_W + gx] === player;
+    }
+
+    function isInsideEnemyTerritory(x, y, player) {
+      const gx = Math.round(x);
+      const gy = Math.round(y);
+      if (gx < 0 || gx >= GRID_W || gy < 0 || gy >= GRID_H) return false;
+      const owner = state.grid[gy * GRID_W + gx];
+      return owner !== 0 && owner !== player;
+    }
+
+    function resetShotClock() {
+      state.shotClock = SHOT_CLOCK_MAX;
+      state.lastTickMark = 5;
+      updateShotClockUI();
+    }
+
+    function setupNewTurn(player, resetStone = true) {
+      state.currentTurn = player;
+      state.powerBoostActive = false;
+      state.bombTargeting = false;
+      document.getElementById('bombTargetBanner').classList.add('hidden');
+
+      if (state.nextTurnBonus[player]) {
+        state.maxFlicksThisTurn = 4;
+        state.flicksLeft = 4;
+        state.nextTurnBonus[player] = false;
+        showToast(`🪨 ${player === 1 ? state.p1Name : state.p2Name} +1 튕기기 발동! (총 4회)`);
+      } else {
+        state.maxFlicksThisTurn = 3;
+        state.flicksLeft = 3;
+      }
+
+      state.hasLeftTerritory = false;
+      state.stone.vx = 0;
+      state.stone.vy = 0;
+      state.stone.moving = false;
+      state.stone.slideTime = 0;
+      state.stone.inEnemyLand = false;
+      state.fireTrail = [];
+
+      if (resetStone) {
+        const pos = findDefaultStonePosition(player);
+        state.stone.x = pos.x;
+        state.stone.y = pos.y;
+      }
+      state.turnPath = [{ x: state.stone.x, y: state.stone.y }];
+
+      resetShotClock();
+      updateHUD();
+      updateItemDock();
+      updateStatusGuide();
+    }
+
+    function canUserInteract() {
+      if (state.status !== 'playing' || state.helpOpen) return false;
+      if (state.stone.moving || state.remoteAnim || state.bombAnim) return false;
+      if (state.mode === 'online' && state.currentTurn !== state.myPlayerNum) return false;
+      return true;
+    }
+
+    function isShotClockRunning() {
+      if (!canUserInteract()) return false;
+      if (state.bombTargeting) return false;
+      return true;
+    }
+
+    function launchStone(vx, vy) {
+      const isPowerUp = state.powerBoostActive;
+      state.stone.vx = vx;
+      state.stone.vy = vy;
+      state.stone.moving = true;
+      state.stone.slideTime = 0;
+      state.flicksLeft--;
+      state.powerBoostActive = false;
+
+      const maxSpd = MAX_PULL_DIST * POWER_SCALE * (isPowerUp ? POWER_UP_MULT : 1);
+      SoundFX.playFlick(Math.min(1, Math.hypot(vx, vy) / maxSpd), isPowerUp);
+
+      state.stone.isFireShot = isPowerUp;
+
+      updateHUD();
+      updateItemDock();
+    }
+
+    async function handleShotTimeout() {
+      state.drag.active = false;
+      state.powerBoostActive = false;
+      SoundFX.playBuzzer();
+      const opp = state.currentTurn === 1 ? 2 : 1;
+      setAvatarMood(state.currentTurn, 'shock', 2200);
+      setAvatarMood(opp, 'smug', 1800);
+
+      const currPt = { x: state.stone.x, y: state.stone.y };
+      spawnFloatingText(currPt.x, currPt.y, '⏰ 시간 초과!', '#ef4444');
+      showToast('⏰ 5초 시간 초과! 턴이 넘어갑니다.');
+
+      await finishTurnAndAdvance('timeout', currPt, currPt, '⏰ 5초 시간 초과! 턴이 넘어갑니다.');
+    }
+
+    async function handleStoneStopped(isOutOfBounds) {
+      state.stone.isFireShot = false;
+      const player = state.currentTurn;
+      const opp = player === 1 ? 2 : 1;
+      const prevPt = state.turnPath[state.turnPath.length - 1];
+      const currPt = { x: state.stone.x, y: state.stone.y };
+
+      let actionType = 'flick';
+      let toastText = '';
+      let turnEnded = false;
+
+      if (isOutOfBounds) {
+        SoundFX.playFail();
+        setAvatarMood(player, 'shock', 2300);
+        setAvatarMood(opp, 'smug', 1800);
+        actionType = 'out';
+        toastText = '아웃! 운동장 밖으로 나갔어요 😅';
+        spawnFloatingText(
+          Math.max(15, Math.min(GRID_W - 15, currPt.x)),
+          Math.max(15, Math.min(GRID_H - 15, currPt.y)),
+          '아웃!', '#dc2626'
+        );
+        turnEnded = true;
+      } else {
+        if (segmentLeavesTerritory(prevPt.x, prevPt.y, currPt.x, currPt.y, player)) {
+          state.hasLeftTerritory = true;
+        }
+        state.turnPath.push(currPt);
+
+        const landedInMyLand = isInsideTerritory(currPt.x, currPt.y, player);
+
+        if (state.hasLeftTerritory && landedInMyLand) {
+          const gained = captureTerritory(player, state.turnPath);
+          SoundFX.playCapture();
+          setAvatarMood(player, 'happy', 2500);
+          setAvatarMood(opp, gained > 600 ? 'shock' : 'sad', 2200);
+          actionType = 'capture';
+          const pct = ((gained / TOTAL_CELLS) * 100).toFixed(1);
+          toastText = `성공! 땅을 +${pct}% 넓혔어요! 🎉`;
+          turnEnded = true;
+        } else if (state.flicksLeft <= 0) {
+          SoundFX.playFail();
+          setAvatarMood(player, 'shock', 2200);
+          setAvatarMood(opp, 'smug', 1800);
+          actionType = 'fail';
+          toastText = `아쉽네요! ${state.maxFlicksThisTurn}번 안에 돌아오지 못했어요.`;
+          spawnFloatingText(currPt.x, currPt.y, '실패!', '#64748b');
+          turnEnded = true;
+        } else {
+          if (!state.hasLeftTerritory && landedInMyLand) {
+            state.turnPath = [currPt];
+            toastText = `내 땅 안에 멈췄어요! (남은 튕기기: ${state.flicksLeft}번)`;
+          } else {
+            toastText = `좋아요! 남은 ${state.flicksLeft}번 안에 내 땅으로 돌아오세요!`;
+          }
+        }
+      }
+
+      if (toastText) showToast(toastText);
+
+      if (turnEnded) {
+        await finishTurnAndAdvance(actionType, prevPt, currPt, toastText);
+      } else {
+        resetShotClock();
+        updateHUD();
+        updateStatusGuide();
+        if (state.mode === 'online') {
+          await pushOnlineState({
+            actionType,
+            from: prevPt,
+            to: currPt,
+            winner: null,
+            winReason: '',
+            message: toastText
+          });
+        }
+      }
+    }
+
+    async function finishTurnAndAdvance(actionType, fromPt, toPt, toastText) {
+      let gameWinner = null;
+      let winReason = '';
+
+      if (state.p1Percent >= EARLY_WIN_PERCENT || state.p2Percent <= 0.01) {
+        gameWinner = 1;
+        winReason = state.p2Percent <= 0.01 ? '상대방의 땅을 모두 차지했습니다!' : `전체의 ${EARLY_WIN_PERCENT}% 이상을 점유했습니다!`;
+      } else if (state.p2Percent >= EARLY_WIN_PERCENT || state.p1Percent <= 0.01) {
+        gameWinner = 2;
+        winReason = state.p1Percent <= 0.01 ? '상대방의 땅을 모두 차지했습니다!' : `전체의 ${EARLY_WIN_PERCENT}% 이상을 점유했습니다!`;
+      }
+
+      let nextTurn = state.currentTurn === 1 ? 2 : 1;
+      let nextRound = state.currentRound;
+      state.turnCount++;
+
+      if (gameWinner === null && state.turnCount % 2 === 0) {
+        spawnRandomItem();
+      }
+
+      if (gameWinner === null && state.currentTurn !== state.firstPlayer) {
+        nextRound = state.currentRound + 1;
+        if (nextRound > state.maxRounds) {
+          if (Math.abs(state.p1Percent - state.p2Percent) < 0.05) gameWinner = 0;
+          else gameWinner = state.p1Percent > state.p2Percent ? 1 : 2;
+          winReason = `${state.maxRounds}라운드가 모두 종료되었습니다!`;
+        }
+      }
+
+      if (gameWinner !== null) {
+        state.status = 'finished';
+        if (state.mode === 'online') {
+          await pushOnlineState({ actionType, from: fromPt, to: toPt, winner: gameWinner, winReason, message: toastText });
+        }
+        showResultModal(gameWinner, winReason);
+      } else {
+        state.currentRound = nextRound;
+        setupNewTurn(nextTurn, true);
+        SoundFX.playTurnChange();
+        if (state.mode === 'online') {
+          await pushOnlineState({ actionType, from: fromPt, to: toPt, winner: null, winReason: '', message: toastText });
+        }
+      }
+    }
+
+    // =========================================================================
+    // 10. 매치 초기화 & 온라인 방 관리 (Firestore)
+    // =========================================================================
+    function getRoomRef(code) {
+      return fbFirestore.doc(db, 'artifacts', appId, 'public', 'data', 'rooms', code);
+    }
+
+    function startFreshMatchData(seed, firstPlayer = 1) {
+      state.seed = seed;
+      state.firstPlayer = firstPlayer;
+      state.currentRound = 1;
+      state.turnCount = 0;
+      state.craters = [];
+      state.avatarMoodOverride = {
+        1: { mood: null, until: 0 },
+        2: { mood: null, until: 0 }
+      };
+      state.inventories = {
+        1: { power: 0, extraFlick: 0, bomb: 0 },
+        2: { power: 0, extraFlick: 0, bomb: 0 }
+      };
+      state.nextTurnBonus = { 1: false, 2: false };
+      state.powerBoostActive = false;
+      state.bombTargeting = false;
+      state.bombAnim = null;
+      state.remoteAnim = null;
+
+      generateHeightmap(seed);
+      generateObstacles(seed);
+      initMapItems(seed);
+      initTerritoryGrid();
+      setupNewTurn(firstPlayer, true);
+      updateAvatarsUI(true);
+    }
+
+    async function createOnlineRoom() {
+      if (!firebaseReady || !currentUser) {
+        showToast('온라인 서버 연결을 확인할 수 없어요. 로컬 모드를 이용해 주세요!');
+        return;
+      }
+
+      let code = '';
+      for (let i = 0; i < 5; i++) {
+        code = String(Math.floor(1000 + Math.random() * 9000));
+        const snap = await fbFirestore.getDoc(getRoomRef(code));
+        if (!snap.exists()) break;
+      }
+
+      const nick = document.getElementById('p1NicknameInput').value.trim() || '파랑팀';
+      state.mode = 'online';
+      state.roomCode = code;
+      state.myPlayerNum = 1;
+      state.p1Name = nick;
+      state.p2Name = '빨강팀';
+      state.status = 'waiting';
+
+      const newSeed = Math.floor(Math.random() * 9999999) + 1;
+      const randomFirst = Math.random() < 0.5 ? 1 : 2;
+      startFreshMatchData(newSeed, randomFirst);
+
+      const initialData = {
+        roomCode: code,
+        status: 'waiting',
+        seed: state.seed,
+        firstPlayer: state.firstPlayer,
+        maxRounds: state.maxRounds,
+        currentRound: 1,
+        turnCount: 0,
+        currentTurn: state.firstPlayer,
+        maxFlicksThisTurn: 3,
+        flicksLeft: 3,
+        hasLeftTerritory: false,
+        p1Uid: currentUser.uid,
+        p1Name: state.p1Name,
+        p1Avatar: state.p1Avatar,
+        p2Uid: null,
+        p2Name: '빨강팀',
+        p2Avatar: state.p2Avatar,
+        gridRLE: encodeGridRLE(state.grid),
+        craters: [],
+        mapItems: state.mapItems,
+        inventories: state.inventories,
+        nextTurnBonus: state.nextTurnBonus,
+        stonePos: { x: state.stone.x, y: state.stone.y },
+        turnPath: state.turnPath,
+        winner: null,
+        winReason: '',
+        lastAction: {
+          id: Date.now(),
+          by: 1,
+          type: 'create',
+          from: { x: state.stone.x, y: state.stone.y },
+          to: { x: state.stone.x, y: state.stone.y },
+          message: ''
+        }
+      };
+
+      try {
+        await fbFirestore.setDoc(getRoomRef(code), initialData);
+        state.lastProcessedActionId = initialData.lastAction.id;
+        document.getElementById('lobbyModal').classList.add('hidden');
+        document.getElementById('waitingRoomCode').textContent = code;
+        renderQRInto('waitingQrBox', buildJoinUrl(code, 'turn'), 132);
+        document.getElementById('waitingModal').classList.remove('hidden');
+        subscribeToRoom(code);
+      } catch (err) {
+        console.error("방 생성 오류:", err);
+        showToast('방 생성에 실패했습니다.');
+      }
+    }
+
+    async function joinOnlineRoom() {
+      if (!firebaseReady || !currentUser) {
+        showToast('온라인 서버 연결을 확인할 수 없어요. 로컬 모드를 이용해 주세요!');
+        return;
+      }
+      const code = document.getElementById('joinCodeInput').value.trim();
+      if (!/^\d{4}$/.test(code)) {
+        showToast('4자리 숫자 방 코드를 입력해주세요!');
+        return;
+      }
+
+      try {
+        const ref = getRoomRef(code);
+        const snap = await fbFirestore.getDoc(ref);
+        if (!snap.exists()) { showToast('존재하지 않는 방 코드입니다.'); return; }
+        const data = snap.data();
+        if (data.status !== 'waiting' && data.p2Uid !== currentUser.uid && data.p1Uid !== currentUser.uid) {
+          showToast('이미 게임이 진행 중인 방입니다.');
+          return;
+        }
+        const nick = document.getElementById('p2NicknameInput').value.trim() || '빨강팀';
+        state.mode = 'online';
+        state.roomCode = code;
+        state.myPlayerNum = data.p1Uid === currentUser.uid ? 1 : 2;
+        state.maxRounds = data.maxRounds || 12;
+        state.firstPlayer = data.firstPlayer || 1;
+
+        state.seed = data.seed || 12345;
+        state.craters = Array.isArray(data.craters) ? data.craters : [];
+        generateHeightmap(state.seed);
+        generateObstacles(state.seed);
+
+        if (state.myPlayerNum === 2) {
+          const actionId = Date.now();
+          state.lastProcessedActionId = actionId;
+          await fbFirestore.updateDoc(ref, {
+            p2Uid: currentUser.uid,
+            p2Name: nick,
+            p2Avatar: state.p2Avatar,
+            status: 'playing',
+            lastAction: {
+              id: actionId,
+              by: 2,
+              type: 'join',
+              from: data.stonePos,
+              to: data.stonePos,
+              message: `${nick}님이 입장했습니다! 게임 시작!`
+            }
+          });
+        }
+
+        document.getElementById('lobbyModal').classList.add('hidden');
+        subscribeToRoom(code);
+      } catch (err) {
+        console.error("방 참여 오류:", err);
+        showToast('방 참여에 실패했습니다.');
+      }
+    }
+
+    async function pushOnlineState({ actionType, from, to, winner, winReason, message }) {
+      if (!firebaseReady || !currentUser || !state.roomCode) return;
+      const actionId = Date.now();
+      state.lastProcessedActionId = actionId;
+      try {
+        await fbFirestore.updateDoc(getRoomRef(state.roomCode), {
+          status: state.status,
+          seed: state.seed,
+          firstPlayer: state.firstPlayer,
+          currentRound: state.currentRound,
+          turnCount: state.turnCount,
+          currentTurn: state.currentTurn,
+          maxFlicksThisTurn: state.maxFlicksThisTurn,
+          flicksLeft: state.flicksLeft,
+          hasLeftTerritory: state.hasLeftTerritory,
+          gridRLE: encodeGridRLE(state.grid),
+          craters: state.craters,
+          mapItems: state.mapItems,
+          inventories: state.inventories,
+          nextTurnBonus: state.nextTurnBonus,
+          stonePos: { x: state.stone.x, y: state.stone.y },
+          turnPath: state.turnPath,
+          winner: winner,
+          winReason: winReason || '',
+          lastAction: {
+            id: actionId,
+            by: state.myPlayerNum,
+            type: actionType,
+            from,
+            to,
+            message: message || ''
+          }
+        });
+      } catch (err) {
+        console.error("온라인 동기화 오류:", err);
+      }
+    }
+
+    function subscribeToRoom(code) {
+      if (state.unsubRoom) { state.unsubRoom(); state.unsubRoom = null; }
+
+      document.getElementById('roomCodeDisplay').textContent = code;
+      document.getElementById('roomCodeBadge').classList.remove('hidden');
+
+      state.unsubRoom = fbFirestore.onSnapshot(
+        getRoomRef(code),
+        (snap) => {
+          if (!snap.exists()) return;
+          const data = snap.data();
+
+          state.p1Name = data.p1Name || '파랑팀';
+          state.p2Name = data.p2Name || '빨강팀';
+          if (data.p1Avatar) state.p1Avatar = data.p1Avatar;
+          if (data.p2Avatar) state.p2Avatar = data.p2Avatar;
+          if (data.firstPlayer) state.firstPlayer = data.firstPlayer;
+          state.maxRounds = data.maxRounds || 12;
+
+          if (data.status === 'playing' && state.status === 'waiting') {
+            document.getElementById('waitingModal').classList.add('hidden');
+            state.status = 'playing';
+            SoundFX.playCapture();
+            showToast(`${state.p2Name}님이 입장했어요! 게임 시작!`);
+            resetShotClock();
+          }
+
+          const action = data.lastAction;
+          const isNewRemote = action && action.id !== state.lastProcessedActionId;
+
+          const applySyncedData = () => {
+            if (data.seed && data.seed !== state.seed) {
+              state.seed = data.seed;
+              state.craters = Array.isArray(data.craters) ? data.craters : [];
+              generateHeightmap(state.seed);
+              generateObstacles(state.seed);
+            } else if (Array.isArray(data.craters) && data.craters.length > state.craters.length) {
+              for (let i = state.craters.length; i < data.craters.length; i++) {
+                const c = data.craters[i];
+                state.craters.push(c);
+                applyCraterToHeightmap(c.x, c.y, c.r, c.depth);
+                renderTerrainRegion(c.x - c.r * 1.45, c.y - c.r * 1.45, c.x + c.r * 1.45, c.y + c.r * 1.45);
+              }
+            }
+
+            const turnChanged = state.currentTurn !== data.currentTurn || state.flicksLeft !== data.flicksLeft;
+
+            state.status = data.status;
+            state.currentRound = data.currentRound;
+            state.turnCount = data.turnCount || 0;
+            state.currentTurn = data.currentTurn;
+            state.maxFlicksThisTurn = data.maxFlicksThisTurn || 3;
+            state.flicksLeft = data.flicksLeft;
+            state.hasLeftTerritory = data.hasLeftTerritory;
+
+            if (Array.isArray(data.mapItems)) state.mapItems = data.mapItems;
+            if (data.inventories) state.inventories = data.inventories;
+            if (data.nextTurnBonus) state.nextTurnBonus = data.nextTurnBonus;
+
+            if (data.gridRLE) {
+              decodeGridRLE(data.gridRLE, state.grid);
+              recalcPercentages();
+              renderTerritoryToOffscreen();
+            }
+
+            if (data.stonePos) {
+              state.stone.x = data.stonePos.x;
+              state.stone.y = data.stonePos.y;
+              state.stone.vx = 0; state.stone.vy = 0;
+              state.stone.moving = false;
+            }
+            state.turnPath = Array.isArray(data.turnPath) ? data.turnPath : [];
+
+            if (turnChanged && state.currentTurn === state.myPlayerNum) {
+              resetShotClock();
+            }
+
+            updateHUD();
+            updateAvatarsUI(true);
+            updateItemDock();
+            updateStatusGuide();
+
+            if (data.status === 'playing') {
+              document.getElementById('resultModal').classList.add('hidden');
+            } else if (data.status === 'finished' && data.winner !== null && data.winner !== undefined) {
+              showResultModal(data.winner, data.winReason || '게임이 종료되었습니다.');
+            }
+          };
+
+          if (isNewRemote) {
+            state.lastProcessedActionId = action.id;
+
+            if (action.by !== state.myPlayerNum && action.type === 'bomb' && action.to) {
+              launchBombTo(action.to.x, action.to.y, true);
+              setTimeout(() => applySyncedData(), 660);
+            } else if (action.by !== state.myPlayerNum && ['flick', 'capture', 'fail', 'out'].includes(action.type) && action.from && action.to) {
+              SoundFX.playFlick(0.6);
+              state.remoteAnim = {
+                from: action.from,
+                to: action.to,
+                progress: 0,
+                duration: 0.45,
+                onComplete: () => {
+                  applySyncedData();
+                  if (action.type === 'capture') SoundFX.playCapture();
+                  else if (action.type === 'fail' || action.type === 'out') SoundFX.playFail();
+                  if (action.message) showToast(action.message);
+                }
+              };
+            } else {
+              applySyncedData();
+              if (action.type === 'rematch') {
+                showToast('새 지형으로 게임이 시작되었습니다!');
+                SoundFX.playCapture();
+                resetShotClock();
+              } else if (action.type === 'place' && action.by !== state.myPlayerNum) {
+                SoundFX.playPlace();
+              } else if (action.type === 'timeout' && action.by !== state.myPlayerNum) {
+                SoundFX.playBuzzer();
+                showToast(action.message || '상대방 시간 초과!');
+              }
+            }
+          } else if (state.status !== 'playing' && data.status === 'playing') {
+            applySyncedData();
+          } else {
+            updateHUD();
+          }
+        },
+        (err) => {
+          console.error("실시간 구독 오류:", err);
+          showToast('네트워크 연결이 불안정합니다.');
+        }
+      );
+    }
+
+    // =========================================================================
+    // 11. 입력 처리 (Pointer Events - 태블릿 터치 & 폭탄 투하)
+    // =========================================================================
+    function getGridCoordsFromEvent(e) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: ((e.clientX - rect.left) / rect.width) * GRID_W,
+        y: ((e.clientY - rect.top) / rect.height) * GRID_H
+      };
+    }
+
+    canvas.addEventListener('pointerdown', (e) => {
+      if (state.gameType === 'realtime') { RT.onPointerDown(e); return; }
+      if (!canUserInteract()) return;
+      e.preventDefault();
+      SoundFX.ensure();
+
+      const pt = getGridCoordsFromEvent(e);
+
+      // A) 폭탄 투하 조준 모드일 때: 탭한 위치로 폭탄 발사
+      if (state.bombTargeting) {
+        const tx = Math.max(8, Math.min(GRID_W - 8, pt.x));
+        const ty = Math.max(8, Math.min(GRID_H - 8, pt.y));
+        launchBombTo(tx, ty, false);
+        return;
+      }
+
+      // B) 말 근처 터치 -> 슬링샷 드래그 시작
+      if (Math.hypot(pt.x - state.stone.x, pt.y - state.stone.y) <= 19) {
+        state.drag.active = true;
+        state.drag.pointerId = e.pointerId;
+        state.drag.currX = pt.x;
+        state.drag.currY = pt.y;
+        canvas.setPointerCapture(e.pointerId);
+        return;
+      }
+
+      // C) 첫 튕기기 전 내 땅 안을 터치 -> 출발 위치 재배치
+      if (state.flicksLeft === state.maxFlicksThisTurn && !state.hasLeftTerritory && isInsideTerritory(pt.x, pt.y, state.currentTurn)) {
+        if (isPointNearObstacle(pt.x, pt.y, STONE_RADIUS + 1.5)) {
+          showToast('장애물 위에는 말을 놓을 수 없어요!');
+          return;
+        }
+        state.stone.x = Math.max(4, Math.min(GRID_W - 5, pt.x));
+        state.stone.y = Math.max(4, Math.min(GRID_H - 5, pt.y));
+        state.turnPath = [{ x: state.stone.x, y: state.stone.y }];
+        SoundFX.playPlace();
+        spawnPlaceRipple(state.stone.x, state.stone.y, state.currentTurn);
+
+        if (state.mode === 'online') {
+          pushOnlineState({
+            actionType: 'place',
+            from: { x: state.stone.x, y: state.stone.y },
+            to: { x: state.stone.x, y: state.stone.y },
+            winner: null, winReason: '', message: ''
+          });
+        }
+      }
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+      if (state.gameType === 'realtime') { RT.onPointerMove(e); return; }
+      if (!state.drag.active || e.pointerId !== state.drag.pointerId) return;
+      e.preventDefault();
+      const pt = getGridCoordsFromEvent(e);
+      state.drag.currX = pt.x;
+      state.drag.currY = pt.y;
+    });
+
+    function endDrag(e) {
+      if (state.gameType === 'realtime') { RT.onPointerUp(e); return; }
+      if (!state.drag.active || e.pointerId !== state.drag.pointerId) return;
+      e.preventDefault();
+      state.drag.active = false;
+      try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+
+      const dx = state.stone.x - state.drag.currX;
+      const dy = state.stone.y - state.drag.currY;
+      const dist = Math.hypot(dx, dy);
+
+      if (dist >= MIN_PULL_DIST) {
+        const clamped = Math.min(dist, MAX_PULL_DIST);
+        const mult = state.powerBoostActive ? POWER_UP_MULT : 1.0;
+        const enemyWeak = isInsideEnemyTerritory(state.stone.x, state.stone.y, state.currentTurn)
+          ? ENEMY_TERRITORY_POWER_MULT
+          : 1.0;
+        const speed = clamped * POWER_SCALE * mult * enemyWeak;
+        launchStone((dx / dist) * speed, (dy / dist) * speed);
+      }
+    }
+
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+
+    // =========================================================================
+    // 12. 파티클 & 시각 효과
+    // =========================================================================
+    function spawnCaptureParticles(gx, gy, player) {
+      const colors = player === 1
+        ? ['#3b82f6', '#60a5fa', '#bae6fd', '#fbbf24', '#ffffff']
+        : ['#ef4444', '#f87171', '#fecaca', '#fbbf24', '#ffffff'];
+      for (let i = 0; i < 28; i++) {
+        const ang = Math.random() * Math.PI * 2;
+        const spd = 0.4 + Math.random() * 1.9;
+        state.particles.push({
+          x: gx, y: gy, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd,
+          size: 1.5 + Math.random() * 2.5,
+          color: colors[Math.floor(Math.random() * colors.length)],
+          life: 1.0, decay: 0.018 + Math.random() * 0.015
+        });
+      }
+    }
+
+    function spawnDustParticles(gx, gy, count = 6) {
+      for (let i = 0; i < count; i++) {
+        const ang = Math.random() * Math.PI * 2;
+        const spd = 0.25 + Math.random() * 0.9;
+        state.particles.push({
+          x: gx, y: gy, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd,
+          size: 1.4 + Math.random() * 1.8,
+          color: Math.random() > 0.5 ? '#d6c3a3' : '#a8906e',
+          life: 0.85, decay: 0.032 + Math.random() * 0.02
+        });
+      }
+    }
+
+    function spawnPlaceRipple(gx, gy, player) {
+      state.particles.push({
+        type: 'ripple', x: gx, y: gy, radius: 3, maxRadius: 12,
+        color: player === 1 ? '#2563eb' : '#dc2626',
+        life: 1.0, decay: 0.05
+      });
+    }
+
+    function spawnFloatingText(gx, gy, text, color) {
+      state.floatingTexts.push({ x: gx, y: gy, text, color, life: 1.0, decay: 0.014 });
+    }
+
+    // =========================================================================
+    // 13. 메인 물리 업데이트 & 렌더링 루프
+    // =========================================================================
+    function resizeCanvas() {
+      const stage = document.getElementById('boardStage');
+      const container = document.getElementById('boardContainer');
+      const sRect = stage.getBoundingClientRect();
+
+      const padW = 12;
+      const padH = 12;
+      const availW = Math.max(100, sRect.width - padW);
+      const availH = Math.max(100, sRect.height - padH);
+      const targetRatio = 10 / 7;
+
+      let w, h;
+      if (availW / availH > targetRatio) {
+        h = availH;
+        w = h * targetRatio;
+      } else {
+        w = availW;
+        h = w / targetRatio;
+      }
+
+      container.style.width = `${Math.floor(w)}px`;
+      container.style.height = `${Math.floor(h)}px`;
+
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.max(1, Math.floor(w * dpr));
+      canvas.height = Math.max(1, Math.floor(h * dpr));
+    }
+    window.addEventListener('resize', resizeCanvas);
+    document.addEventListener('fullscreenchange', () => setTimeout(resizeCanvas, 80));
+
+    let lastTime = performance.now();
+
+    function gameLoop(now) {
+      const dt = Math.min((now - lastTime) / 1000, 0.05);
+      lastTime = now;
+
+      if (state.gameType === 'realtime') {
+        RT.update(dt);
+        RT.draw(now);
+      } else {
+        updateGame(dt);
+        drawGame(now);
+      }
+
+      requestAnimationFrame(gameLoop);
+    }
+
+    function updateGame(dt) {
+      // 1) 5초 샷클락 카운트다운
+      if (isShotClockRunning()) {
+        state.shotClock -= dt;
+        const halfMark = Math.ceil(state.shotClock * 2);
+        if (state.shotClock <= 2.05 && state.shotClock > 0 && halfMark < state.lastTickMark) {
+          state.lastTickMark = halfMark;
+          SoundFX.playTick(state.shotClock <= 1.1);
+        }
+        if (state.shotClock <= 0) {
+          state.shotClock = 0;
+          updateShotClockUI();
+          handleShotTimeout();
+        } else {
+          updateShotClockUI();
+        }
+      }
+
+      // 1-B) 아바타 표정 실시간 상태 동기화
+      updateAvatarsUI(false);
+
+      // 2) 말 물리 시뮬레이션 (서브스텝 3회로 터널링 방지 & 정밀 경사 중력)
+      if (state.stone.moving) {
+        const s = state.stone;
+        s.slideTime += dt;
+        const subSteps = 3;
+        const subFactor = (dt * 60) / subSteps;
+        let outOfBounds = false;
+
+        for (let step = 0; step < subSteps; step++) {
+          const { gx, gy } = sampleSlope(s.x, s.y);
+          s.vx -= gx * GRAVITY_SCALE * subFactor;
+          s.vy -= gy * GRAVITY_SCALE * subFactor;
+
+          s.x += s.vx * subFactor;
+          s.y += s.vy * subFactor;
+
+          // 상대방 땅 진입 시 마찰력과 구름 저항 증가 (느려지고 빨리 멈춤)
+          const inEnemy = isInsideEnemyTerritory(s.x, s.y, state.currentTurn);
+          if (inEnemy && !s.inEnemyLand && Math.hypot(s.vx, s.vy) > 0.6) {
+            spawnFloatingText(s.x, s.y - 3, '🐢 상대 땅 감속!', '#7c3aed');
+            spawnDustParticles(s.x, s.y, 5);
+          }
+          s.inEnemyLand = inEnemy;
+
+          const baseFric = inEnemy ? ENEMY_TERRITORY_FRICTION : FRICTION_60FPS;
+          const baseDrag = inEnemy ? ENEMY_TERRITORY_DRAG : ROLLING_DRAG;
+
+          const friction = Math.pow(baseFric, subFactor);
+          s.vx *= friction;
+          s.vy *= friction;
+
+          const spd = Math.hypot(s.vx, s.vy);
+          if (spd > 0.0001) {
+            const drag = Math.min(spd, baseDrag * subFactor);
+            s.vx -= (s.vx / spd) * drag;
+            s.vy -= (s.vy / spd) * drag;
+          }
+
+          resolveObstacleCollisions();
+          checkItemPickup();
+
+          if (s.x < 0 || s.x >= GRID_W || s.y < 0 || s.y >= GRID_H) {
+            outOfBounds = true;
+            break;
+          }
+        }
+
+        if (s.isFireShot) {
+          state.fireTrail.push({ x: s.x, y: s.y, life: 1.0 });
+        }
+
+        const currSpd = Math.hypot(s.vx, s.vy);
+        if (currSpd > 0.35) {
+          SoundFX.playSandSlide(Math.min(1, currSpd / 4.5));
+        }
+
+        if (outOfBounds) {
+          s.moving = false;
+          handleStoneStopped(true);
+        } else {
+          const speed = Math.hypot(s.vx, s.vy);
+          const { gx, gy } = sampleSlope(s.x, s.y);
+          const slopeForce = Math.hypot(gx, gy) * GRAVITY_SCALE;
+
+          if ((speed < STOP_SPEED && slopeForce < 0.018) || (speed < 0.045) || s.slideTime > 4.5) {
+            s.vx = 0; s.vy = 0;
+            s.moving = false;
+            handleStoneStopped(false);
+          }
+        }
+      }
+
+      // 3) 온라인 상대방 이동 애니메이션
+      if (state.remoteAnim) {
+        state.remoteAnim.progress += dt / state.remoteAnim.duration;
+        const t = Math.min(1, state.remoteAnim.progress);
+        const ease = 1 - Math.pow(1 - t, 3);
+        state.stone.x = state.remoteAnim.from.x + (state.remoteAnim.to.x - state.remoteAnim.from.x) * ease;
+        state.stone.y = state.remoteAnim.from.y + (state.remoteAnim.to.y - state.remoteAnim.from.y) * ease;
+        if (t >= 1) {
+          const cb = state.remoteAnim.onComplete;
+          state.remoteAnim = null;
+          if (cb) cb();
+        }
+      }
+
+      // 4) 폭탄 포물선 비행 애니메이션
+      if (state.bombAnim) {
+        state.bombAnim.progress += dt / state.bombAnim.duration;
+        if (state.bombAnim.progress >= 1) {
+          const cb = state.bombAnim.onImpact;
+          state.bombAnim = null;
+          if (cb) cb();
+        }
+      }
+
+      // 5) 화면 흔들림 감쇠
+      if (state.screenShake > 0) {
+        state.screenShake = Math.max(0, state.screenShake - dt * 36);
+      }
+
+      // 6) 불꽃 궤적 / 파티클 / 플로팅 텍스트
+      for (let i = state.fireTrail.length - 1; i >= 0; i--) {
+        state.fireTrail[i].life -= dt * 3.2;
+        if (state.fireTrail[i].life <= 0) state.fireTrail.splice(i, 1);
+      }
+      for (let i = state.particles.length - 1; i >= 0; i--) {
+        const p = state.particles[i];
+        p.life -= p.decay * (dt * 60);
+        if (p.type === 'ripple') {
+          p.radius = 3 + (p.maxRadius - 3) * (1 - p.life);
+        } else {
+          p.x += p.vx * (dt * 60);
+          p.y += p.vy * (dt * 60);
+          p.vx *= 0.93; p.vy *= 0.93;
+        }
+        if (p.life <= 0) state.particles.splice(i, 1);
+      }
+      for (let i = state.floatingTexts.length - 1; i >= 0; i--) {
+        const ft = state.floatingTexts[i];
+        ft.y -= 0.2 * (dt * 60);
+        ft.life -= ft.decay * (dt * 60);
+        if (ft.life <= 0) state.floatingTexts.splice(i, 1);
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // 캔버스 렌더링
+    // -------------------------------------------------------------------------
+    function drawGame(now) {
+      const w = canvas.width;
+      const h = canvas.height;
+      const scaleX = w / GRID_W;
+      const scaleY = h / GRID_H;
+
+      ctx.save();
+      if (state.screenShake > 0.2) {
+        const sx = (Math.random() - 0.5) * state.screenShake * 1.4;
+        const sy = (Math.random() - 0.5) * state.screenShake * 1.4;
+        ctx.translate(sx, sy);
+      }
+
+      // 1) 고해상도 운동장 지형
+      ctx.drawImage(terrainCanvas, 0, 0, w, h);
+
+      // 2) 운동장 석회 라인
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
+      ctx.lineWidth = Math.max(1.5, scaleX * 0.48);
+      ctx.setLineDash([scaleX * 3.5, scaleX * 2.5]);
+      ctx.beginPath();
+      ctx.moveTo(w * 0.5, scaleY * 3);
+      ctx.lineTo(w * 0.5, h - scaleY * 3);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.arc(w * 0.5, h * 0.5, Math.min(w, h) * 0.14, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      // 3) 점유 영토 레이어
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(territoryCanvas, 0, 0, w, h);
+      ctx.imageSmoothingEnabled = true;
+
+      // 4) 랜덤 구조물
+      drawObstacles(scaleX, scaleY);
+
+      // 5) 맵 아이템
+      drawMapItems(scaleX, scaleY, now);
+
+      // 6) 현재 턴 이동 경로
+      if (state.turnPath.length > 0 && state.status === 'playing') {
+        const isP1 = state.currentTurn === 1;
+        ctx.save();
+        ctx.strokeStyle = isP1 ? 'rgba(37, 99, 235, 0.92)' : 'rgba(220, 38, 38, 0.92)';
+        ctx.lineWidth = Math.max(2, scaleX * 0.85);
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.setLineDash([scaleX * 2.2, scaleX * 1.4]);
+        ctx.beginPath();
+        for (let i = 0; i < state.turnPath.length; i++) {
+          const px = state.turnPath[i].x * scaleX;
+          const py = state.turnPath[i].y * scaleY;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        if (state.stone.moving || state.remoteAnim) {
+          ctx.lineTo(state.stone.x * scaleX, state.stone.y * scaleY);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        for (let i = 0; i < state.turnPath.length; i++) {
+          const px = state.turnPath[i].x * scaleX;
+          const py = state.turnPath[i].y * scaleY;
+          ctx.beginPath();
+          ctx.arc(px, py, scaleX * 1.25, 0, Math.PI * 2);
+          ctx.fillStyle = '#ffffff';
+          ctx.fill();
+          ctx.lineWidth = scaleX * 0.45;
+          ctx.strokeStyle = isP1 ? '#1d4ed8' : '#b91c1c';
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // 7) 파워업 불꽃 궤적
+      for (const ft of state.fireTrail) {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, ft.life * 0.85);
+        ctx.beginPath();
+        ctx.arc(ft.x * scaleX, ft.y * scaleY, scaleX * (1.2 + ft.life * 2.2), 0, Math.PI * 2);
+        ctx.fillStyle = ft.life > 0.5 ? '#fde047' : '#f97316';
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // 8) 슬링샷 조준선 & 경사 반영 예측 궤적
+      if (state.drag.active) {
+        drawSlingshotAim(scaleX, scaleY);
+      }
+
+      // 9) 납작돌(말) + 5초 원형 타이머 링
+      if (state.status !== 'lobby') {
+        drawRiverStone(scaleX, scaleY, now);
+      }
+
+      // 10) 폭탄 포물선 투하 애니메이션
+      if (state.bombAnim) {
+        drawBombFlight(scaleX, scaleY);
+      }
+
+      // 11) 파티클 효과
+      for (const p of state.particles) {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, p.life);
+        if (p.type === 'ripple') {
+          ctx.beginPath();
+          ctx.arc(p.x * scaleX, p.y * scaleY, p.radius * scaleX, 0, Math.PI * 2);
+          ctx.strokeStyle = p.color;
+          ctx.lineWidth = scaleX * 0.85;
+          ctx.stroke();
+        } else {
+          ctx.beginPath();
+          ctx.arc(p.x * scaleX, p.y * scaleY, p.size * scaleX * 0.45, 0, Math.PI * 2);
+          ctx.fillStyle = p.color;
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      // 12) 플로팅 텍스트
+      for (const ft of state.floatingTexts) {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, ft.life);
+        ctx.font = `900 ${Math.round(scaleX * 4.4)}px "Jua", "Noto Sans KR", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.lineWidth = Math.max(2.5, scaleX * 0.9);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+        ctx.strokeText(ft.text, ft.x * scaleX, ft.y * scaleY);
+        ctx.fillStyle = ft.color;
+        ctx.fillText(ft.text, ft.x * scaleX, ft.y * scaleY);
+        ctx.restore();
+      }
+
+      // 13) 폭탄 조준 모드 빨간 테두리 비네트
+      if (state.bombTargeting) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(239, 68, 68, 0.72)';
+        ctx.lineWidth = scaleX * 2.4;
+        ctx.strokeRect(0, 0, w, h);
+        ctx.restore();
+      }
+
+      ctx.restore();
+    }
+
+    function drawObstacles(scaleX, scaleY) {
+      for (const o of state.obstacles) {
+        const cx = o.x * scaleX;
+        const cy = o.y * scaleY;
+
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(o.angle);
+
+        if (o.type === 'boulder') {
+          const r = o.r * scaleX;
+          const drawRockPath = (ox, oy, mult = 1) => {
+            ctx.beginPath();
+            const pts = o.verts || [];
+            if (pts.length > 0) {
+              for (let i = 0; i < pts.length; i++) {
+                const p0 = pts[i];
+                const p1 = pts[(i + 1) % pts.length];
+                const x0 = ox + p0.cos * r * mult;
+                const y0 = oy + p0.sin * r * mult;
+                const x1 = ox + p1.cos * r * mult;
+                const y1 = oy + p1.sin * r * mult;
+                const mx = (x0 + x1) * 0.5;
+                const my = (y0 + y1) * 0.5;
+                if (i === 0) ctx.moveTo(mx, my);
+                else ctx.quadraticCurveTo(x0, y0, mx, my);
+              }
+              const first = pts[0];
+              ctx.quadraticCurveTo(
+                ox + first.cos * r * mult,
+                oy + first.sin * r * mult,
+                ox + (first.cos + pts[1].cos) * 0.5 * r * mult,
+                oy + (first.sin + pts[1].sin) * 0.5 * r * mult
+              );
+              ctx.closePath();
+            } else {
+              ctx.arc(ox, oy, r * mult, 0, Math.PI * 2);
+            }
+          };
+
+          drawRockPath(scaleX * 0.9, scaleY * 1.15, 1.03);
+          ctx.fillStyle = 'rgba(20, 14, 8, 0.38)';
+          ctx.fill();
+
+          drawRockPath(0, 0, 1);
+          const grad = ctx.createRadialGradient(-r * 0.32, -r * 0.32, r * 0.08, 0, 0, r * 1.1);
+          grad.addColorStop(0, '#d6d3d1');
+          grad.addColorStop(0.42, '#8c857b');
+          grad.addColorStop(0.82, '#57534e');
+          grad.addColorStop(1, '#34302d');
+          ctx.fillStyle = grad;
+          ctx.fill();
+          ctx.strokeStyle = '#292524';
+          ctx.lineWidth = Math.max(1, scaleX * 0.32);
+          ctx.stroke();
+
+          ctx.strokeStyle = 'rgba(28, 25, 23, 0.55)';
+          ctx.lineWidth = Math.max(0.9, scaleX * 0.24);
+          ctx.beginPath();
+          ctx.moveTo(-r * 0.38, -r * 0.12);
+          ctx.lineTo(r * 0.02, r * 0.12);
+          ctx.lineTo(r * 0.38, -r * 0.18);
+          ctx.stroke();
+
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+          ctx.beginPath();
+          ctx.ellipse(-r * 0.25, -r * 0.28, r * 0.32, r * 0.18, -0.5, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = 'rgba(101, 163, 13, 0.58)';
+          ctx.beginPath();
+          ctx.arc(-r * 0.3, r * 0.32, r * 0.22, 0, Math.PI * 2);
+          ctx.arc(-r * 0.12, r * 0.4, r * 0.14, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (o.type === 'log') {
+          const hw = o.hw * scaleX;
+          const hh = o.hh * scaleY;
+
+          ctx.fillStyle = 'rgba(20, 14, 8, 0.38)';
+          ctx.beginPath();
+          ctx.roundRect(-hw + scaleX * 0.85, -hh + scaleY * 1.1, hw * 2, hh * 2, hh * 0.65);
+          ctx.fill();
+
+          const grad = ctx.createLinearGradient(0, -hh, 0, hh);
+          grad.addColorStop(0, '#a67449');
+          grad.addColorStop(0.28, '#854d27');
+          grad.addColorStop(0.75, '#5c3317');
+          grad.addColorStop(1, '#3b1f0d');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.roundRect(-hw, -hh, hw * 2, hh * 2, hh * 0.65);
+          ctx.fill();
+          ctx.strokeStyle = '#2d1608';
+          ctx.lineWidth = Math.max(1, scaleX * 0.3);
+          ctx.stroke();
+
+          ctx.strokeStyle = 'rgba(255, 224, 185, 0.22)';
+          ctx.lineWidth = Math.max(0.8, scaleX * 0.2);
+          ctx.beginPath();
+          ctx.moveTo(-hw * 0.72, -hh * 0.32); ctx.lineTo(hw * 0.68, -hh * 0.32);
+          ctx.moveTo(-hw * 0.65, hh * 0.22); ctx.lineTo(hw * 0.75, hh * 0.22);
+          ctx.stroke();
+
+          ctx.fillStyle = '#e7c598';
+          ctx.beginPath();
+          ctx.ellipse(hw - hh * 0.35, 0, hh * 0.42, hh * 0.88, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#9a6b3e';
+          ctx.lineWidth = Math.max(0.8, scaleX * 0.2);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.ellipse(hw - hh * 0.35, 0, hh * 0.2, hh * 0.45, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        } else {
+          const hw = o.hw * scaleX;
+          const hh = o.hh * scaleY;
+          const rad = scaleX * 0.55;
+
+          ctx.fillStyle = 'rgba(20, 14, 8, 0.38)';
+          ctx.beginPath();
+          ctx.roundRect(-hw + scaleX * 0.85, -hh + scaleY * 1.1, hw * 2, hh * 2, rad);
+          ctx.fill();
+
+          const grad = ctx.createLinearGradient(0, -hh, 0, hh);
+          grad.addColorStop(0, '#d97352');
+          grad.addColorStop(0.5, '#b14a30');
+          grad.addColorStop(1, '#752915');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.roundRect(-hw, -hh, hw * 2, hh * 2, rad);
+          ctx.fill();
+          ctx.strokeStyle = '#451a03';
+          ctx.lineWidth = Math.max(1, scaleX * 0.3);
+          ctx.stroke();
+
+          ctx.strokeStyle = 'rgba(231, 229, 228, 0.65)';
+          ctx.lineWidth = Math.max(1.1, scaleX * 0.32);
+          ctx.beginPath();
+          ctx.moveTo(-hw + rad * 0.4, 0); ctx.lineTo(hw - rad * 0.4, 0);
+          ctx.moveTo(0, -hh + rad * 0.4); ctx.lineTo(0, 0);
+          ctx.moveTo(-hw * 0.45, 0); ctx.lineTo(-hw * 0.45, hh - rad * 0.4);
+          ctx.moveTo(hw * 0.45, 0); ctx.lineTo(hw * 0.45, hh - rad * 0.4);
+          ctx.stroke();
+
+          ctx.strokeStyle = 'rgba(255, 237, 213, 0.3)';
+          ctx.lineWidth = Math.max(0.8, scaleX * 0.22);
+          ctx.beginPath();
+          ctx.moveTo(-hw + rad, -hh + scaleY * 0.35);
+          ctx.lineTo(hw - rad, -hh + scaleY * 0.35);
+          ctx.stroke();
+        }
+
+        ctx.restore();
+      }
+    }
+
+    function drawMapItems(scaleX, scaleY, now) {
+      for (const it of state.mapItems) {
+        const meta = ITEM_META[it.type];
+        const x = it.x * scaleX;
+        const bob = Math.sin(now / 260 + it.id * 1.7) * scaleY * 1.0;
+        const y = it.y * scaleY + bob;
+        const r = scaleX * 4.2;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.ellipse(x, it.y * scaleY + r * 0.9, r * 0.8, r * 0.34, 0, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(15, 10, 5, 0.32)';
+        ctx.fill();
+
+        const glow = 0.5 + 0.5 * Math.sin(now / 210 + it.id);
+        ctx.beginPath();
+        ctx.arc(x, y, r * (1.2 + glow * 0.16), 0, Math.PI * 2);
+        ctx.fillStyle = meta.color + '38';
+        ctx.fill();
+
+        if (it.type === 'bomb') {
+          const bGrad = ctx.createRadialGradient(x - r * 0.28, y - r * 0.25, r * 0.08, x, y, r * 0.85);
+          bGrad.addColorStop(0, '#64748b');
+          bGrad.addColorStop(0.45, '#1e293b');
+          bGrad.addColorStop(1, '#020617');
+          ctx.beginPath();
+          ctx.arc(x, y + r * 0.08, r * 0.8, 0, Math.PI * 2);
+          ctx.fillStyle = bGrad;
+          ctx.fill();
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = scaleX * 0.32;
+          ctx.stroke();
+
+          ctx.fillStyle = '#475569';
+          ctx.fillRect(x - r * 0.22, y - r * 0.85, r * 0.44, r * 0.26);
+          ctx.strokeStyle = '#d97706';
+          ctx.lineWidth = scaleX * 0.45;
+          ctx.beginPath();
+          ctx.moveTo(x, y - r * 0.85);
+          ctx.quadraticCurveTo(x + r * 0.4, y - r * 1.25, x + r * 0.65, y - r * 0.95);
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.arc(x + r * 0.68, y - r * 0.95, r * (0.22 + glow * 0.12), 0, Math.PI * 2);
+          ctx.fillStyle = glow > 0.5 ? '#fde047' : '#ef4444';
+          ctx.fill();
+        } else if (it.type === 'power') {
+          const pGrad = ctx.createRadialGradient(x - r * 0.3, y - r * 0.3, r * 0.1, x, y, r * 0.92);
+          pGrad.addColorStop(0, '#fef08a');
+          pGrad.addColorStop(0.55, '#f59e0b');
+          pGrad.addColorStop(1, '#b45309');
+          ctx.beginPath();
+          ctx.arc(x, y, r * 0.88, 0, Math.PI * 2);
+          ctx.fillStyle = pGrad;
+          ctx.fill();
+          ctx.lineWidth = scaleX * 0.42;
+          ctx.strokeStyle = '#ffffff';
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.moveTo(x + r * 0.12, y - r * 0.52);
+          ctx.lineTo(x - r * 0.35, y + r * 0.06);
+          ctx.lineTo(x + r * 0.02, y + r * 0.06);
+          ctx.lineTo(x - r * 0.14, y + r * 0.55);
+          ctx.lineTo(x + r * 0.36, y - r * 0.08);
+          ctx.lineTo(x - r * 0.02, y - r * 0.08);
+          ctx.closePath();
+          ctx.fillStyle = '#ffffff';
+          ctx.fill();
+        } else {
+          const eGrad = ctx.createRadialGradient(x - r * 0.3, y - r * 0.3, r * 0.1, x, y, r * 0.92);
+          eGrad.addColorStop(0, '#a7f3d0');
+          eGrad.addColorStop(0.55, '#10b981');
+          eGrad.addColorStop(1, '#047857');
+          ctx.beginPath();
+          ctx.arc(x, y, r * 0.88, 0, Math.PI * 2);
+          ctx.fillStyle = eGrad;
+          ctx.fill();
+          ctx.lineWidth = scaleX * 0.42;
+          ctx.strokeStyle = '#ffffff';
+          ctx.stroke();
+
+          ctx.font = `900 ${Math.round(r * 0.92)}px "Jua", sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText('+1', x, y + scaleY * 0.2);
+        }
+
+        ctx.restore();
+      }
+    }
+
+    function drawSlingshotAim(scaleX, scaleY) {
+      const dx = state.stone.x - state.drag.currX;
+      const dy = state.stone.y - state.drag.currY;
+      const dist = Math.hypot(dx, dy);
+      if (dist < MIN_PULL_DIST) return;
+
+      const clamped = Math.min(dist, MAX_PULL_DIST);
+      const ratio = clamped / MAX_PULL_DIST;
+      const dirX = dx / dist;
+      const dirY = dy / dist;
+      const isPowerUp = state.powerBoostActive;
+
+      const gaugeColor = isPowerUp
+        ? '#f59e0b'
+        : ratio < 0.45 ? '#10b981' : ratio < 0.8 ? '#f59e0b' : '#ef4444';
+
+      const sx = state.stone.x * scaleX;
+      const sy = state.stone.y * scaleY;
+      const pullX = (state.stone.x - dirX * clamped) * scaleX;
+      const pullY = (state.stone.y - dirY * clamped) * scaleY;
+
+      ctx.save();
+      ctx.strokeStyle = isPowerUp ? 'rgba(245, 158, 11, 0.85)' : 'rgba(51, 65, 85, 0.65)';
+      ctx.lineWidth = scaleX * (isPowerUp ? 1.3 : 0.95);
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(pullX, pullY);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(pullX, pullY, scaleX * 1.9, 0, Math.PI * 2);
+      ctx.fillStyle = gaugeColor;
+      ctx.fill();
+
+      let simX = state.stone.x;
+      let simY = state.stone.y;
+      const mult = isPowerUp ? POWER_UP_MULT : 1.0;
+      const startInEnemy = isInsideEnemyTerritory(state.stone.x, state.stone.y, state.currentTurn);
+      const enemyWeak = startInEnemy ? ENEMY_TERRITORY_POWER_MULT : 1.0;
+      let simVx = dirX * clamped * POWER_SCALE * mult * enemyWeak;
+      let simVy = dirY * clamped * POWER_SCALE * mult * enemyWeak;
+
+      for (let i = 1; i <= 18; i++) {
+        const { gx, gy } = sampleSlope(simX, simY);
+        simVx -= gx * GRAVITY_SCALE;
+        simVy -= gy * GRAVITY_SCALE;
+        simX += simVx;
+        simY += simVy;
+        const simInEnemy = isInsideEnemyTerritory(simX, simY, state.currentTurn);
+        const simFric = simInEnemy ? ENEMY_TERRITORY_FRICTION : FRICTION_60FPS;
+        simVx *= simFric;
+        simVy *= simFric;
+
+        if (i % 2 === 0) {
+          const alpha = 1 - i / 20;
+          ctx.beginPath();
+          ctx.arc(simX * scaleX, simY * scaleY, scaleX * (1.25 - i * 0.03), 0, Math.PI * 2);
+          ctx.fillStyle = simInEnemy ? '#7c3aed' : gaugeColor;
+          ctx.globalAlpha = alpha * 0.9;
+          ctx.fill();
+        }
+      }
+
+      ctx.globalAlpha = 1;
+      const pct = Math.round(ratio * (isPowerUp ? 155 : 100) * enemyWeak);
+      ctx.font = `900 ${Math.round(scaleX * 3.4)}px "Noto Sans KR", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.lineWidth = Math.max(2, scaleX * 0.7);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.92)';
+      const label = startInEnemy
+        ? `🐢 약화 ${pct}%`
+        : isPowerUp ? `⚡ ${pct}%` : `${pct}%`;
+      ctx.strokeText(label, sx, sy - STONE_RADIUS * scaleY * 2.1);
+      ctx.fillStyle = startInEnemy ? '#7c3aed' : gaugeColor;
+      ctx.fillText(label, sx, sy - STONE_RADIUS * scaleY * 2.1);
+      ctx.restore();
+    }
+
+    function drawRiverStone(scaleX, scaleY, now) {
+      const sx = state.stone.x * scaleX;
+      const sy = state.stone.y * scaleY;
+      const r = STONE_RADIUS * scaleX;
+      const isP1 = state.currentTurn === 1;
+
+      ctx.save();
+
+      if (isShotClockRunning()) {
+        const frac = Math.max(0, state.shotClock / SHOT_CLOCK_MAX);
+        const ringR = r * 1.85;
+        ctx.beginPath();
+        ctx.arc(sx, sy, ringR, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+        ctx.lineWidth = scaleX * 0.85;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(sx, sy, ringR, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac);
+        ctx.strokeStyle = state.shotClock <= 2.0 ? '#ef4444' : state.shotClock <= 3.5 ? '#f59e0b' : '#10b981';
+        ctx.lineWidth = scaleX * 0.95;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+      }
+
+      if (state.powerBoostActive) {
+        const pulse = 0.5 + 0.5 * Math.sin(now / 120);
+        ctx.beginPath();
+        ctx.arc(sx, sy, r * (1.45 + pulse * 0.25), 0, Math.PI * 2);
+        ctx.strokeStyle = '#facc15';
+        ctx.lineWidth = scaleX * 0.9;
+        ctx.stroke();
+      }
+
+      ctx.beginPath();
+      ctx.ellipse(sx + scaleX * 0.75, sy + scaleY * 1.05, r * 1.08, r * 0.92, -0.15, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(15, 20, 28, 0.42)';
+      ctx.fill();
+
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(-0.2);
+
+      const stoneGrad = ctx.createRadialGradient(-r * 0.32, -r * 0.32, r * 0.08, 0, 0, r * 1.08);
+      stoneGrad.addColorStop(0, '#f5f5f4');
+      stoneGrad.addColorStop(0.45, '#b8b2a8');
+      stoneGrad.addColorStop(0.82, '#6b665e');
+      stoneGrad.addColorStop(1, '#3d3935');
+      ctx.beginPath();
+      ctx.ellipse(0, 0, r * 1.04, r * 0.94, 0, 0, Math.PI * 2);
+      ctx.fillStyle = stoneGrad;
+      ctx.fill();
+
+      ctx.fillStyle = 'rgba(41, 37, 36, 0.38)';
+      ctx.beginPath();
+      ctx.arc(-r * 0.42, r * 0.18, r * 0.09, 0, Math.PI * 2);
+      ctx.arc(r * 0.36, -r * 0.26, r * 0.08, 0, Math.PI * 2);
+      ctx.arc(r * 0.15, r * 0.44, r * 0.07, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.lineWidth = r * 0.28;
+      ctx.strokeStyle = isP1 ? 'rgba(37, 99, 235, 0.92)' : 'rgba(220, 38, 38, 0.92)';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, r * 0.68, r * 0.62, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 0.28, 0, Math.PI * 2);
+      ctx.fillStyle = isP1 ? '#3b82f6' : '#ef4444';
+      ctx.fill();
+
+      ctx.lineWidth = scaleX * 0.35;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.78)';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, r * 1.04, r * 0.94, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.ellipse(-r * 0.3, -r * 0.34, r * 0.26, r * 0.13, -0.45, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.58)';
+      ctx.fill();
+
+      ctx.restore();
+      ctx.restore();
+    }
+
+    function drawBombFlight(scaleX, scaleY) {
+      const b = state.bombAnim;
+      const t = Math.min(1, b.progress);
+      const curX = b.fromX + (b.toX - b.fromX) * t;
+      const curY = b.fromY + (b.toY - b.fromY) * t;
+      const arcHeight = Math.sin(t * Math.PI) * 32;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(b.toX * scaleX, b.toY * scaleY, BOMB_RADIUS * scaleX * (0.4 + 0.6 * t), 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(239, 68, 68, 0.75)';
+      ctx.lineWidth = scaleX * 0.7;
+      ctx.setLineDash([scaleX * 2, scaleX * 1.5]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.beginPath();
+      ctx.ellipse(curX * scaleX, curY * scaleY, scaleX * 2.5, scaleY * 1.4, 0, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.32)';
+      ctx.fill();
+
+      const bx = curX * scaleX;
+      const by = (curY - arcHeight) * scaleY;
+      const br = scaleX * (3.2 + Math.sin(t * Math.PI) * 1.8);
+
+      ctx.beginPath();
+      ctx.arc(bx, by, br, 0, Math.PI * 2);
+      ctx.fillStyle = '#1e293b';
+      ctx.fill();
+      ctx.strokeStyle = '#facc15';
+      ctx.lineWidth = scaleX * 0.5;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(bx + br * 0.65, by - br * 0.65, br * 0.45, 0, Math.PI * 2);
+      ctx.fillStyle = Math.random() > 0.4 ? '#facc15' : '#ef4444';
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // =========================================================================
+    // 14. HUD, 5초 초시계, 아바타 표정, 아이템 독 UI 갱신
+    // =========================================================================
+    function setAvatarMood(player, mood, durationMs = 2000) {
+      state.avatarMoodOverride[player] = {
+        mood,
+        until: performance.now() + durationMs
+      };
+      updateAvatarsUI(true);
+    }
+
+    function computeAvatarMood(player) {
+      const now = performance.now();
+      const ov = state.avatarMoodOverride[player];
+      if (ov && ov.mood && now < ov.until) {
+        return ov.mood;
+      }
+      if (state.status === 'finished') {
+        if (Math.abs(state.p1Percent - state.p2Percent) < 0.05) return 'normal';
+        const isWin = (player === 1 && state.p1Percent > state.p2Percent) || (player === 2 && state.p2Percent > state.p1Percent);
+        return isWin ? 'happy' : 'sad';
+      }
+      if (state.status === 'playing' && state.currentTurn === player) {
+        if (state.powerBoostActive || state.bombTargeting) return 'focused';
+        if (isShotClockRunning() && state.shotClock <= 2.2) return 'nervous';
+      }
+      const myPct = player === 1 ? state.p1Percent : state.p2Percent;
+      const oppPct = player === 1 ? state.p2Percent : state.p1Percent;
+      const diff = myPct - oppPct;
+      if (diff >= 10) return 'smug';
+      if (diff <= -10) return 'sad';
+      if (diff <= -4) return 'nervous';
+      return 'normal';
+    }
+
+    function updateAvatarsUI(force = false) {
+      [1, 2].forEach((p) => {
+        const mood = computeAvatarMood(p);
+        if (!force && state.lastRenderedMood[p] === mood) return;
+        const changed = state.lastRenderedMood[p] !== mood;
+        state.lastRenderedMood[p] = mood;
+
+        const charId = p === 1 ? state.p1Avatar : state.p2Avatar;
+        const hudEl = document.getElementById(p === 1 ? 'p1AvatarHud' : 'p2AvatarHud');
+        const tagEl = document.getElementById(p === 1 ? 'p1MoodTag' : 'p2MoodTag');
+        if (hudEl) {
+          hudEl.innerHTML = renderAvatarSVG(charId, mood, p);
+          if (changed) {
+            hudEl.classList.remove('avatar-pop');
+            void hudEl.offsetWidth;
+            hudEl.classList.add('avatar-pop');
+          }
+        }
+        if (tagEl) {
+          const meta = MOOD_LABELS[mood] || MOOD_LABELS.normal;
+          tagEl.textContent = meta.text;
+          tagEl.className = `hidden md:inline-block text-[10px] font-bold px-1.5 py-0.2 rounded-full whitespace-nowrap ${meta.cls}`;
+        }
+      });
+    }
+
+    function updateShotClockUI() {
+      const box = document.getElementById('shotClockBox');
+      const icon = document.getElementById('shotClockIcon');
+      const txt = document.getElementById('shotClockText');
+
+      const val = Math.max(0, state.shotClock);
+      txt.textContent = val.toFixed(1);
+
+      if (state.bombTargeting) {
+        box.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-100 border-2 border-amber-400 shadow-sm flex-shrink-0';
+        icon.setAttribute('class', 'w-4 h-4 sm:w-5 sm:h-5 text-amber-600 flex-shrink-0');
+        txt.className = 'font-title text-base sm:text-xl text-amber-800 tabular-nums';
+        txt.textContent = '조준';
+        return;
+      }
+
+      if (val <= 2.0 && isShotClockRunning()) {
+        box.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-red-100 border-2 border-red-500 shadow-sm animate-urgent flex-shrink-0';
+        icon.setAttribute('class', 'w-4 h-4 sm:w-5 sm:h-5 text-red-600 flex-shrink-0');
+        txt.className = 'font-title text-base sm:text-xl text-red-600 tabular-nums';
+      } else if (val <= 3.5 && isShotClockRunning()) {
+        box.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-50 border-2 border-amber-400 shadow-sm flex-shrink-0';
+        icon.setAttribute('class', 'w-4 h-4 sm:w-5 sm:h-5 text-amber-600 flex-shrink-0');
+        txt.className = 'font-title text-base sm:text-xl text-amber-700 tabular-nums';
+      } else {
+        box.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-50 border-2 border-emerald-300 shadow-sm flex-shrink-0';
+        icon.setAttribute('class', 'w-4 h-4 sm:w-5 sm:h-5 text-emerald-600 flex-shrink-0');
+        txt.className = 'font-title text-base sm:text-xl text-emerald-700 tabular-nums';
+      }
+    }
+
+    function updateHUD() {
+      document.getElementById('p1NameHud').textContent = state.p1Name;
+      document.getElementById('p2NameHud').textContent = state.p2Name;
+      document.getElementById('p1Percent').textContent = `${state.p1Percent.toFixed(1)}%`;
+      document.getElementById('p2Percent').textContent = `${state.p2Percent.toFixed(1)}%`;
+      document.getElementById('p1Bar').style.width = `${Math.min(100, state.p1Percent)}%`;
+      document.getElementById('p2Bar').style.width = `${Math.min(100, state.p2Percent)}%`;
+
+      document.getElementById('p1BonusBadge').classList.toggle('hidden', !state.nextTurnBonus[1]);
+      document.getElementById('p2BonusBadge').classList.toggle('hidden', !state.nextTurnBonus[2]);
+
+      document.getElementById('roundBadge').textContent = `${Math.min(state.currentRound, state.maxRounds)} / ${state.maxRounds}R`;
+
+      const isP1 = state.currentTurn === 1;
+      const turnBadge = document.getElementById('turnBadge');
+      turnBadge.textContent = `${isP1 ? state.p1Name : state.p2Name} 차례`;
+      turnBadge.className = `px-2.5 py-0.5 rounded-full text-white text-[11px] sm:text-xs font-bold shadow-sm animate-soft-pulse whitespace-nowrap ${isP1 ? 'bg-blue-600' : 'bg-red-600'}`;
+
+      document.getElementById('p1Badge').classList.toggle('ring-2', isP1);
+      document.getElementById('p1Badge').classList.toggle('ring-blue-500', isP1);
+      document.getElementById('p2Badge').classList.toggle('ring-2', !isP1);
+      document.getElementById('p2Badge').classList.toggle('ring-red-500', !isP1);
+
+      const dotsWrap = document.getElementById('flickDots');
+      dotsWrap.innerHTML = '';
+      for (let i = 0; i < state.maxFlicksThisTurn; i++) {
+        const dot = document.createElement('span');
+        const active = i < state.flicksLeft;
+        dot.className = active
+          ? `w-3 h-3 sm:w-3.5 sm:h-3.5 rounded-full border-2 shadow-sm transition-all ${isP1 ? 'bg-blue-500 border-blue-900' : 'bg-red-500 border-red-900'}`
+          : 'w-3 h-3 sm:w-3.5 sm:h-3.5 rounded-full bg-slate-200 border-2 border-slate-300 scale-75 transition-all';
+        dotsWrap.appendChild(dot);
+      }
+
+      const waitBanner = document.getElementById('waitTurnBanner');
+      waitBanner.classList.toggle('hidden', !(state.mode === 'online' && state.status === 'playing' && state.currentTurn !== state.myPlayerNum));
+    }
+
+    function updateItemDock() {
+      const owner = state.mode === 'online' ? state.myPlayerNum : state.currentTurn;
+      const inv = state.inventories[owner] || { power: 0, extraFlick: 0, bomb: 0 };
+      const interactable = canUserInteract();
+
+      document.getElementById('itemPowerCount').textContent = inv.power;
+      document.getElementById('itemExtraCount').textContent = inv.extraFlick;
+      document.getElementById('itemBombCount').textContent = inv.bomb;
+
+      const pBtn = document.getElementById('itemPowerBtn');
+      const eBtn = document.getElementById('itemExtraBtn');
+      const bBtn = document.getElementById('itemBombBtn');
+
+      pBtn.disabled = !interactable || (inv.power <= 0 && !state.powerBoostActive);
+      eBtn.disabled = !interactable || inv.extraFlick <= 0 || state.nextTurnBonus[owner];
+      bBtn.disabled = !interactable || (inv.bomb <= 0 && !state.bombTargeting);
+
+      pBtn.classList.toggle('item-active-glow', state.powerBoostActive);
+      bBtn.classList.toggle('item-active-glow', state.bombTargeting);
+    }
+
+    function updateStatusGuide() {
+      const iconEl = document.getElementById('statusIcon');
+      const textEl = document.getElementById('statusText');
+
+      if (state.bombTargeting) {
+        iconEl.textContent = '💣';
+        textEl.textContent = '폭탄을 떨어뜨릴 상대 땅(또는 원하는 위치)을 터치하세요!';
+        return;
+      }
+      if (state.mode === 'online' && state.currentTurn !== state.myPlayerNum) {
+        iconEl.textContent = '⏳';
+        textEl.textContent = `${state.currentTurn === 1 ? state.p1Name : state.p2Name}님이 말을 튕길 차례입니다.`;
+        return;
+      }
+      if (state.powerBoostActive) {
+        iconEl.textContent = '⚡';
+        textEl.textContent = '파워 업 발동 중! 평소보다 1.55배 강하게 날아갑니다!';
+        return;
+      }
+      if (isInsideEnemyTerritory(state.stone.x, state.stone.y, state.currentTurn)) {
+        iconEl.textContent = '🐢';
+        textEl.textContent = `상대 땅 위! 튕기는 세기가 약해지고 빠르게 감속됩니다. (남은 ${state.flicksLeft}번)`;
+        return;
+      }
+      if (state.hasLeftTerritory) {
+        iconEl.textContent = '🏠';
+        textEl.textContent = `남은 ${state.flicksLeft}번 안에 내 땅으로 돌아오세요! (5초 제한)`;
+      } else {
+        iconEl.textContent = '🎯';
+        textEl.textContent = '내 땅 터치로 위치 변경 · 말을 뒤로 당겨 5초 안에 튕기세요!';
+      }
+    }
+
+    let toastTimer = null;
+    function showToast(msg) {
+      const el = document.getElementById('toastMsg');
+      el.textContent = msg;
+      el.classList.remove('hidden', 'toast-pop');
+      void el.offsetWidth;
+      el.classList.add('toast-pop');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.add('hidden'), 2400);
+    }
+
+    function showResultModal(winner, reason) {
+      SoundFX.playWin();
+      const titleEl = document.getElementById('resultTitle');
+      const trophyEl = document.getElementById('resultTrophy');
+      if (winner === 0) {
+        trophyEl.textContent = '🤝';
+        titleEl.textContent = '무승부!';
+        titleEl.className = 'font-title text-3xl text-amber-600 mb-1';
+      } else if (winner === 1) {
+        trophyEl.textContent = '🏆';
+        titleEl.textContent = `${state.p1Name} 승리!`;
+        titleEl.className = 'font-title text-3xl text-blue-600 mb-1';
+      } else {
+        trophyEl.textContent = '🏆';
+        titleEl.textContent = `${state.p2Name} 승리!`;
+        titleEl.className = 'font-title text-3xl text-red-600 mb-1';
+      }
+
+      document.getElementById('resultReason').textContent = reason;
+      document.getElementById('resP1Name').textContent = state.p1Name;
+      document.getElementById('resP2Name').textContent = state.p2Name;
+      document.getElementById('resP1Score').textContent = `${state.p1Percent.toFixed(1)}%`;
+      document.getElementById('resP2Score').textContent = `${state.p2Percent.toFixed(1)}%`;
+      document.getElementById('resP1Avatar').innerHTML = renderAvatarSVG(
+        state.p1Avatar,
+        winner === 1 ? 'happy' : winner === 2 ? 'sad' : 'normal',
+        1
+      );
+      document.getElementById('resP2Avatar').innerHTML = renderAvatarSVG(
+        state.p2Avatar,
+        winner === 2 ? 'happy' : winner === 1 ? 'sad' : 'normal',
+        2
+      );
+      document.getElementById('turnResultCards').classList.remove('hidden');
+      document.getElementById('rtResultList').classList.add('hidden');
+      updateAvatarsUI(true);
+      document.getElementById('resultModal').classList.remove('hidden');
+    }
+
+    // =========================================================================
+    // 14-C. QR 코드 생성 & URL 자동 입장 헬퍼
+    // =========================================================================
+    function buildJoinUrl(roomCode = '', mode = 'turn') {
+      const base = `${window.location.origin}${window.location.pathname}`;
+      if (!roomCode) return base;
+      return `${base}?room=${encodeURIComponent(roomCode)}&mode=${encodeURIComponent(mode)}`;
+    }
+
+    function renderQRInto(containerId, text, size = 176) {
+      const el = document.getElementById(containerId);
+      if (!el) return;
+      el.innerHTML = '';
+      if (typeof window.QRCode === 'function') {
+        new window.QRCode(el, {
+          text,
+          width: size,
+          height: size,
+          colorDark: '#1e293b',
+          colorLight: '#ffffff',
+          correctLevel: window.QRCode.CorrectLevel.M
+        });
+      } else {
+        el.innerHTML = `<div class="p-3 text-xs font-bold text-slate-600 break-all">${text}</div>`;
+      }
+    }
+
+    let activeQrUrl = window.location.href;
+    function openQrModal({ title, desc, url, roomCode = '', showStartBtn = false }) {
+      activeQrUrl = url;
+      document.getElementById('qrModalTitle').textContent = title;
+      document.getElementById('qrModalDesc').textContent = desc;
+      renderQRInto('qrCodeContainer', url, 180);
+
+      const codeBox = document.getElementById('qrRoomCodeBox');
+      if (roomCode) {
+        codeBox.classList.remove('hidden');
+        document.getElementById('qrRoomCodeText').textContent = roomCode;
+      } else {
+        codeBox.classList.add('hidden');
+      }
+      document.getElementById('qrStartRtNowBtn').classList.toggle('hidden', !showStartBtn);
+      document.getElementById('qrModal').classList.remove('hidden');
+    }
+
+    // =========================================================================
+    // 14-D. 실시간 배틀로얄 엔진 (최대 30인, 동적 맵 크기, 확대 카메라, 미니맵)
+    // =========================================================================
+    const RT_PALETTE = (() => {
+      const list = [{ r: 0, g: 0, b: 0, hex: '#000000' }];
+      // 30명 각각의 선명하고 구분되는 색상 팔레트 생성 (황금각 분산)
+      for (let i = 0; i < 30; i++) {
+        const hue = (i * 137.508) % 360;
+        const sat = i % 2 === 0 ? 78 : 66;
+        const lit = i % 3 === 0 ? 48 : i % 3 === 1 ? 56 : 42;
+        const c = (1 - Math.abs(2 * (lit / 100) - 1)) * (sat / 100);
+        const x = c * (1 - Math.abs(((hue / 60) % 2) - 1));
+        const m = lit / 100 - c / 2;
+        let r = 0, g = 0, b = 0;
+        if (hue < 60) [r, g, b] = [c, x, 0];
+        else if (hue < 120) [r, g, b] = [x, c, 0];
+        else if (hue < 180) [r, g, b] = [0, c, x];
+        else if (hue < 240) [r, g, b] = [0, x, c];
+        else if (hue < 300) [r, g, b] = [x, 0, c];
+        else [r, g, b] = [c, 0, x];
+        const R = Math.round((r + m) * 255);
+        const G = Math.round((g + m) * 255);
+        const B = Math.round((b + m) * 255);
+        const hex = `#${R.toString(16).padStart(2, '0')}${G.toString(16).padStart(2, '0')}${B.toString(16).padStart(2, '0')}`;
+        list.push({ r: R, g: G, b: B, hex });
+      }
+      return list;
+    })();
+
+    const AI_BOT_NAMES = [
+      '민수', '서연', '지호', '하은', '도윤', '수아', '시우', '지우', '예준', '서윤',
+      '주원', '하윤', '유준', '지아', '건우', '채원', '현우', '소율', '우진', '다은',
+      '선우', '은서', '연우', '지민', '승우', '예린', '준서', '유나', '태양'
+    ];
+
+    const RT = {
+      aiCount: 9,                 // 컴퓨터 대결 모드 AI 수 (1 ~ 29명, 나 포함 2 ~ 30명)
+      aiDifficulty: 'normal',     // 'easy' | 'normal' | 'hard'
+      selectedDuration: 180,
+      myAvatar: 'dog',
+      isComputerMode: true,
+      isSpectator: false,         // 선생님 관전자 전용 모드 여부 (플레이어 목록에서 완전 제외)
+      followTargetId: 0,          // 관전/자유 시점에서 특정 학생 클릭 추적 ID (0이면 추적 없음)
+      gridW: 270,
+      gridH: 189,
+      totalCells: 270 * 189,
+      grid: null,
+      heightmap: null,
+      terrainCanvas: document.createElement('canvas'),
+      territoryCanvas: document.createElement('canvas'),
+      territoryImgData: null,
+      minimapCanvas: null,
+      minimapCtx: null,
+
+      players: [],        // [{ id(1..30), name, avatar, color, isHuman, isBot, x, y, vx, vy, moving, flicksLeft, hasLeft, path, cells, percent, homeX, homeY, respawnTimer, aiCooldown }]
+      myId: 1,
+      obstacles: [],
+      particles: [],
+      floatingTexts: [],
+      timeLeft: 180,
+      seed: 12345,
+
+      // 확대/축소 & 자유 관전 카메라 ('follow' | 'free' | 'overview')
+      cam: { x: 135, y: 94, zoom: 1.45, defaultZoom: 1.45, minZoom: 1.0, maxZoom: 3.2, mode: 'follow' },
+      drag: { active: false, pointerId: null, currWorldX: 0, currWorldY: 0 },
+      pan: { active: false, pointerId: null, last
