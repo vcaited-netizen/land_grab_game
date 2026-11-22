@@ -276,56 +276,60 @@
   </header>
 
   <!-- ==================== 메인 운동장 게임 보드 ==================== -->
-  <main id="boardStage" class="flex-1 w-full max-w-[1440px] mx-auto px-2 sm:px-3 py-1 flex items-center justify-center min-h-0 relative overflow-hidden">
-    <div id="boardContainer" class="relative board-frame rounded-xl sm:rounded-2xl overflow-hidden bg-[#d8be96]" style="aspect-ratio: 10 / 7;">
-      <canvas id="gameCanvas"></canvas>
+  <main id="boardStage" class="flex-1 w-full max-w-[1440px] mx-auto px-2 sm:px-3 py-1 flex flex-col md:flex-row items-center justify-center gap-2 min-h-0 relative overflow-hidden">
+    <!-- 순수 게임 보드 영역 (UI 오버레이 방해 없음) -->
+    <div id="boardWrap" class="flex-1 w-full h-full min-w-0 min-h-0 flex items-center justify-center relative">
+      <div id="boardContainer" class="relative board-frame rounded-xl sm:rounded-2xl overflow-hidden bg-[#d8be96]" style="aspect-ratio: 10 / 7;">
+        <canvas id="gameCanvas"></canvas>
 
-      <!-- 온라인 방 코드 뱃지 -->
-      <div id="roomCodeBadge" class="hidden absolute top-2.5 left-2.5 px-2.5 py-1 rounded-lg bg-white/90 backdrop-blur border border-amber-700/30 shadow text-xs font-bold text-stone-800 pointer-events-none">
-        방 코드: <span id="roomCodeDisplay" class="text-blue-600 tracking-wider font-black">----</span>
+        <!-- 온라인 방 코드 뱃지 -->
+        <div id="roomCodeBadge" class="hidden absolute top-2.5 left-2.5 px-2.5 py-1 rounded-lg bg-white/90 backdrop-blur border border-amber-700/30 shadow text-xs font-bold text-stone-800 pointer-events-none">
+          방 코드: <span id="roomCodeDisplay" class="text-blue-600 tracking-wider font-black">----</span>
+        </div>
+
+        <!-- 지형 안내 미니 범례 -->
+        <div class="hidden sm:flex absolute bottom-2 left-2.5 px-2 py-0.5 rounded-md bg-black/45 backdrop-blur-sm text-white/95 text-[10px] font-medium items-center gap-2 pointer-events-none">
+          <span>⛰️ 밝은곳=언덕</span>
+          <span>🕳️ 어두운곳=골짜기/웅덩이</span>
+        </div>
+
+        <!-- 폭탄 조준 모드 배너 -->
+        <div id="bombTargetBanner" class="hidden absolute top-2.5 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-full bg-red-600/95 text-white text-xs sm:text-sm font-black shadow-lg border-2 border-yellow-300 flex items-center gap-2 z-20">
+          <span>💣 폭탄 투하 위치 선택! (취소하려면 폭탄 버튼 다시 터치)</span>
+        </div>
+
+        <!-- 온라인 상대방 턴 대기 배너 -->
+        <div id="waitTurnBanner" class="hidden absolute top-2.5 right-2.5 px-3 py-1 rounded-full bg-slate-900/80 text-white text-xs sm:text-sm font-bold shadow-md pointer-events-none flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+          <span>상대방 차례 진행 중...</span>
+        </div>
       </div>
+    </div>
 
-      <!-- 실시간 모드: 좌상단 실시간 TOP 5 순위표 (클릭 시 해당 학생 시점 추적) -->
-      <div id="rtLeaderboard" class="hidden absolute top-2.5 left-2.5 z-20 bg-slate-900/80 backdrop-blur-sm text-white rounded-xl px-2.5 py-2 border border-white/15 shadow-lg min-w-[136px] sm:min-w-[162px]">
-        <div class="text-[10px] font-black text-amber-300 tracking-wide mb-1 flex items-center justify-between gap-2">
+    <!-- 실시간 모드 전용 외부 사이드 패널 (게임 화면 밖 배치: 가로 화면은 우측, 세로 화면은 하단) -->
+    <aside id="rtSidePanel" class="hidden flex-shrink-0 w-full md:w-52 lg:w-60 flex-row md:flex-col gap-2 items-stretch justify-center z-20">
+      <!-- 실시간 TOP 5 순위표 (클릭 시 해당 학생 시점 추적) -->
+      <div id="rtLeaderboard" class="flex-1 md:flex-initial bg-slate-900/90 backdrop-blur-sm text-white rounded-2xl px-3 py-2.5 border-2 border-amber-400/30 shadow-lg min-w-0">
+        <div class="text-[11px] font-black text-amber-300 tracking-wide mb-1.5 flex items-center justify-between gap-2">
           <span>🏆 실시간 TOP 5</span>
           <span id="rtAliveBadge" class="text-white/70">30명</span>
         </div>
-        <div id="rtLeaderboardList" class="space-y-0.5 text-[11px] font-bold"></div>
+        <div id="rtLeaderboardList" class="space-y-0.5 text-[11px] sm:text-xs font-bold"></div>
       </div>
 
-      <!-- 실시간 모드: 우상단 카메라 확대/축소 버튼 -->
-      <div id="rtZoomControls" class="hidden absolute top-2.5 right-2.5 z-20 flex flex-col gap-1">
-        <button id="rtZoomInBtn" class="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-white/90 hover:bg-white active:scale-95 text-slate-800 font-black text-base shadow-md border border-slate-300 flex items-center justify-center" title="화면 확대">＋</button>
-        <button id="rtZoomOutBtn" class="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-white/90 hover:bg-white active:scale-95 text-slate-800 font-black text-base shadow-md border border-slate-300 flex items-center justify-center" title="화면 축소">－</button>
-      </div>
-
-      <!-- 실시간 모드: 우하단 전체 맵 미니맵 (터치/드래그로 시점 이동) -->
-      <div id="minimapWrap" class="hidden absolute bottom-2.5 right-2.5 z-20 rounded-xl overflow-hidden bg-stone-900/85 p-1">
-        <div class="flex items-center justify-between px-1 pb-0.5 text-[9px] font-bold text-amber-200 pointer-events-none">
-          <span>🗺️ 전체 지도 (터치 이동)</span>
-          <span id="minimapZoomLabel">확대 1.5x</span>
+      <!-- 전체 맵 미니맵 + 카메라 확대/축소 버튼 -->
+      <div id="minimapWrap" class="flex-shrink-0 rounded-2xl overflow-hidden bg-stone-900/90 border-2 border-amber-400/30 p-2 shadow-lg flex flex-col gap-1.5">
+        <div class="flex items-center justify-between gap-1 text-[10px] font-bold text-amber-200">
+          <span class="truncate">🗺️ 전체 지도</span>
+          <div id="rtZoomControls" class="flex items-center gap-1">
+            <span id="minimapZoomLabel" class="text-[10px] text-white/80 mr-0.5">1.5x</span>
+            <button id="rtZoomOutBtn" class="w-6 h-6 rounded-lg bg-white/90 hover:bg-white active:scale-95 text-slate-900 font-black text-xs flex items-center justify-center shadow" title="화면 축소">－</button>
+            <button id="rtZoomInBtn" class="w-6 h-6 rounded-lg bg-white/90 hover:bg-white active:scale-95 text-slate-900 font-black text-xs flex items-center justify-center shadow" title="화면 확대">＋</button>
+          </div>
         </div>
-        <canvas id="minimapCanvas" width="190" height="133" class="block w-28 sm:w-44 h-auto rounded-lg bg-[#c5ab82] cursor-pointer touch-none"></canvas>
+        <canvas id="minimapCanvas" width="190" height="133" class="block w-32 sm:w-40 md:w-full h-auto rounded-xl bg-[#c5ab82] cursor-pointer touch-none"></canvas>
       </div>
-
-      <!-- 지형 안내 미니 범례 -->
-      <div class="hidden sm:flex absolute bottom-2 left-2.5 px-2 py-0.5 rounded-md bg-black/45 backdrop-blur-sm text-white/95 text-[10px] font-medium items-center gap-2 pointer-events-none">
-        <span>⛰️ 밝은곳=언덕</span>
-        <span>🕳️ 어두운곳=골짜기/웅덩이</span>
-      </div>
-
-      <!-- 폭탄 조준 모드 배너 -->
-      <div id="bombTargetBanner" class="hidden absolute top-2.5 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-full bg-red-600/95 text-white text-xs sm:text-sm font-black shadow-lg border-2 border-yellow-300 flex items-center gap-2 z-20">
-        <span>💣 폭탄 투하 위치 선택! (취소하려면 폭탄 버튼 다시 터치)</span>
-      </div>
-
-      <!-- 온라인 상대방 턴 대기 배너 -->
-      <div id="waitTurnBanner" class="hidden absolute top-2.5 right-2.5 px-3 py-1 rounded-full bg-slate-900/80 text-white text-xs sm:text-sm font-bold shadow-md pointer-events-none flex items-center gap-1.5">
-        <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
-        <span>상대방 차례 진행 중...</span>
-      </div>
-    </div>
+    </aside>
 
     <!-- 중앙 토스트 메시지 -->
     <div id="toastMsg" class="hidden fixed top-24 left-1/2 -translate-x-1/2 z-40 px-5 py-2.5 rounded-2xl bg-slate-900/92 text-white font-bold text-sm sm:text-base shadow-2xl border border-white/15 whitespace-nowrap pointer-events-none">
@@ -3075,12 +3079,12 @@
     // 13. 메인 물리 업데이트 & 렌더링 루프
     // =========================================================================
     function resizeCanvas() {
-      const stage = document.getElementById('boardStage');
+      const stage = document.getElementById('boardWrap') || document.getElementById('boardStage');
       const container = document.getElementById('boardContainer');
       const sRect = stage.getBoundingClientRect();
 
-      const padW = 12;
-      const padH = 12;
+      const padW = 8;
+      const padH = 8;
       const availW = Math.max(100, sRect.width - padW);
       const availH = Math.max(100, sRect.height - padH);
       const targetRatio = 10 / 7;
@@ -4248,11 +4252,16 @@
         document.getElementById('turnHudBox').classList.toggle('hidden', isRealtime);
         document.getElementById('rtHudBox').classList.toggle('hidden', !isRealtime);
         document.getElementById('turnItemDock').classList.toggle('hidden', isRealtime);
-        document.getElementById('minimapWrap').classList.toggle('hidden', !isRealtime);
-        document.getElementById('rtLeaderboard').classList.toggle('hidden', !isRealtime);
-        document.getElementById('rtZoomControls').classList.toggle('hidden', !isRealtime);
+
+        const sidePanel = document.getElementById('rtSidePanel');
+        if (sidePanel) {
+          sidePanel.classList.toggle('hidden', !isRealtime);
+          sidePanel.classList.toggle('flex', isRealtime);
+        }
+
         document.getElementById('bombTargetBanner').classList.add('hidden');
         document.getElementById('waitTurnBanner').classList.add('hidden');
+        requestAnimationFrame(() => resizeCanvas());
       },
 
       // 맵 외곽(4개 변 둘레)에 참가자 수만큼 균등 좌표를 생성하고 시드 기반으로 랜덤 셔플
